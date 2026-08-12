@@ -9734,8 +9734,8 @@ void MSCSSProperties_init_dispex_info(dispex_data_t *info, compat_mode_t mode)
 }
 
 dispex_static_data_t MSCSSProperties_dispex = {
-    .id           = PROT_MSCSSProperties,
-    .prototype_id = PROT_CSSStyleDeclaration,
+    .id           = OBJID_MSCSSProperties,
+    .prototype_id = OBJID_CSSStyleDeclaration,
     .init_info    = MSCSSProperties_init_dispex_info,
 };
 
@@ -9777,12 +9777,13 @@ static const tid_t MSStyleCSSProperties_iface_tids[] = {
     0
 };
 dispex_static_data_t MSStyleCSSProperties_dispex = {
-    .id           = PROT_MSStyleCSSProperties,
-    .prototype_id = PROT_MSCSSProperties,
+    .id           = OBJID_MSStyleCSSProperties,
+    .prototype_id = OBJID_MSCSSProperties,
     .vtbl         = &MSStyleCSSProperties_dispex_vtbl,
     .disp_tid     = DispHTMLStyle_tid,
     .iface_tids   = MSStyleCSSProperties_iface_tids,
     .init_info    = MSStyleCSSProperties_init_dispex_info,
+    .js_flags     = HOSTOBJ_VOLATILE_PROPS
 };
 
 static HRESULT get_style_from_elem(HTMLElement *elem, nsIDOMCSSStyleDeclaration **ret)
@@ -9923,10 +9924,11 @@ static const dispex_static_data_vtbl_t CSSStyleDeclaration_dispex_vtbl = {
 };
 
 dispex_static_data_t CSSStyleDeclaration_dispex = {
-    .id        = PROT_CSSStyleDeclaration,
+    .id        = OBJID_CSSStyleDeclaration,
     .vtbl      = &CSSStyleDeclaration_dispex_vtbl,
     .disp_tid  = DispHTMLW3CComputedStyle_tid,
     .init_info = CSSStyleDeclaration_init_dispex_info,
+    .js_flags  = HOSTOBJ_VOLATILE_PROPS
 };
 
 HRESULT create_computed_style(nsIDOMCSSStyleDeclaration *nsstyle, DispatchEx *owner, IHTMLCSSStyleDeclaration **p)

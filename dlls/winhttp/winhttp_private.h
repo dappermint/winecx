@@ -213,8 +213,8 @@ struct request
     DWORD max_redirects;
     DWORD redirect_count; /* total number of redirects during this request */
     WCHAR *status_text;
-    DWORD content_length; /* total number of bytes to be read */
-    DWORD content_read;   /* bytes read so far */
+    UINT64 content_length; /* total number of bytes to be read */
+    UINT64 content_read;   /* bytes read so far */
     BOOL  read_chunked;   /* are we reading in chunked mode? */
     BOOL  read_chunked_eof;  /* end of stream in chunked mode */
     BOOL  read_chunked_size; /* chunk size remaining */
@@ -408,7 +408,7 @@ DWORD netconn_create( struct hostdata *, const struct sockaddr_storage *, int, s
 void netconn_unload( void );
 ULONG netconn_query_data_available( struct netconn * );
 DWORD netconn_recv( struct netconn *, void *, size_t, int, int * );
-DWORD netconn_resolve( WCHAR *, INTERNET_PORT, struct sockaddr_storage *, int );
+DWORD netconn_resolve( const WCHAR *, INTERNET_PORT, DWORD, struct sockaddr_storage *, int );
 DWORD netconn_secure_connect( struct netconn *, WCHAR *, DWORD, CredHandle *, BOOL );
 DWORD netconn_send( struct netconn *, const void *, size_t, int *, WSAOVERLAPPED * );
 BOOL netconn_wait_overlapped_result( struct netconn *conn, WSAOVERLAPPED *ovr, DWORD *len );
