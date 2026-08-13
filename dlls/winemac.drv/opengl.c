@@ -2610,16 +2610,6 @@ static void macdrv_glCompressedTexSubImage3D(GLenum target, GLint level, GLint x
 
 /* CX HACK 23422 - END */
 
-static void register_extension(const char *ext)
-{
-    if (gl_info.wglExtensions[0])
-        strcat(gl_info.wglExtensions, " ");
-    strcat(gl_info.wglExtensions, ext);
-
-    TRACE("'%s'\n", ext);
-}
-
-static const char *macdrv_init_wgl_extensions(struct opengl_funcs *funcs)
 static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extensions[GL_EXTENSION_COUNT])
 {
     /*

@@ -4307,9 +4307,12 @@ macdrv_metal_swapchain macdrv_create_view_swapchain(macdrv_view v)
     return (macdrv_metal_swapchain)[[MetalViewSwapChain alloc] initWithView:v];
 }
 
-macdrv_metal_swapchain macdrv_create_offscreen_swapchain(void* hwnd, CGRect bounds)
+macdrv_metal_swapchain macdrv_create_offscreen_swapchain(void* hwnd, void* client_hwnd, CGRect container, CGRect frame)
 {
-    return (macdrv_metal_swapchain)[[CAContextSwapChain alloc] initWithHwnd:hwnd bounds:bounds];
+    return (macdrv_metal_swapchain)[[CAContextSwapChain alloc] initWithHwnd:hwnd
+                                                                     client:client_hwnd
+                                                                  container:container
+                                                                      frame:frame];
 }
 
 macdrv_metal_layer macdrv_swapchain_get_layer(macdrv_metal_swapchain swapchain)
