@@ -711,6 +711,83 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
         *value = KMT_DRIVERVERSION_WDDM_3_1;
         return STATUS_SUCCESS;
     }
+    case KMTQAITYPE_ADAPTERTYPE:
+    {
+        D3DKMT_ADAPTERTYPE *value = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        memset( value, 0, sizeof(*value) );
+        value->RenderSupported = 1;
+        value->DisplaySupported = 1;
+        return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_PHYSICALADAPTERCOUNT:
+    {
+        D3DKMT_PHYSICAL_ADAPTER_COUNT *value = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        value->Count = 1;
+        return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_ADAPTERADDRESS:
+    {
+        D3DKMT_ADAPTERADDRESS *value = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        /* There is no PCI bus to report a location on. */
+        memset( value, 0, sizeof(*value) );
+        return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_ADAPTERGUID:
+    {
+        VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &id};
+        struct vulkan_physical_device *physical_device;
+        GUID *value = desc->pPrivateDriverData;
+        struct d3dkmt_adapter *adapter;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+
+        physical_device->instance->p_vkGetPhysicalDeviceProperties2KHR( physical_device->host.physical_device, &properties2 );
+        memcpy( value, id.deviceUUID, sizeof(*value) );
+        return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_GETSEGMENTSIZE:
+    {
+        VkPhysicalDeviceMemoryProperties2 properties2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+        D3DKMT_SEGMENTSIZEINFO *value = desc->pPrivateDriverData;
+        struct vulkan_physical_device *physical_device;
+        struct d3dkmt_adapter *adapter;
+        unsigned int i;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+
+        memset( value, 0, sizeof(*value) );
+
+        physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2KHR( physical_device->host.physical_device, &properties2 );
+        for (i = 0; i < properties2.memoryProperties.memoryHeapCount; ++i)
+        {
+            if (properties2.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                value->DedicatedVideoMemorySize += properties2.memoryProperties.memoryHeaps[i].size;
+            else
+                value->SharedSystemMemorySize += properties2.memoryProperties.memoryHeaps[i].size;
+        }
+        return STATUS_SUCCESS;
+    }
     /* CW HACK 24905 */
     case KMTQAITYPE_WDDM_2_7_CAPS:
     {

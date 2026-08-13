@@ -149,6 +149,53 @@ typedef struct _D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP
     D3DDDI_VIDEO_PRESENT_SOURCE_ID VidPnSourceId;
 } D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP;
 
+typedef struct _D3DKMT_ADAPTERADDRESS
+{
+    UINT BusNumber;
+    UINT DeviceNumber;
+    UINT FunctionNumber;
+} D3DKMT_ADAPTERADDRESS;
+
+typedef struct _D3DKMT_SEGMENTSIZEINFO
+{
+    UINT64 DedicatedVideoMemorySize;
+    UINT64 DedicatedSystemMemorySize;
+    UINT64 SharedSystemMemorySize;
+} D3DKMT_SEGMENTSIZEINFO;
+
+typedef struct _D3DKMT_PHYSICAL_ADAPTER_COUNT
+{
+    UINT Count;
+} D3DKMT_PHYSICAL_ADAPTER_COUNT;
+
+typedef struct _D3DKMT_ADAPTERTYPE
+{
+    union
+    {
+        struct
+        {
+            UINT RenderSupported : 1;
+            UINT DisplaySupported : 1;
+            UINT SoftwareDevice : 1;
+            UINT PostDevice : 1;
+            UINT HybridDiscrete : 1;
+            UINT HybridIntegrated : 1;
+            UINT IndirectDisplayDevice : 1;
+            UINT Paravirtualized : 1;
+            UINT ACGSupported : 1;
+            UINT SupportSetTimingsFromVidPn : 1;
+            UINT Detachable : 1;
+            UINT ComputeOnly : 1;
+            UINT Prototype : 1;
+            UINT RuntimePowerManagement : 1;
+            UINT TestOnly : 1;
+            UINT SingleAdapterHybridMode : 1;
+            UINT Reserved : 16;
+        } DUMMYSTRUCTNAME;
+        UINT Value;
+    } DUMMYUNIONNAME;
+} D3DKMT_ADAPTERTYPE;
+
 #define D3DKMT_QUERYSTATISTICS_SEGMENT_PREFERENCE_MAX 5
 
 typedef struct _D3DKMT_CLOSEADAPTER
