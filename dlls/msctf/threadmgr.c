@@ -1774,3 +1774,32 @@ void ThreadMgr_OnDocumentMgrDestruction(ITfThreadMgr *iface, ITfDocumentMgr *mgr
             wnd->docmgr = NULL;
     }
 }
+
+/***********************************************************************
+ *              TF_GetThreadMgr (MSCTF.@)
+ */
+HRESULT WINAPI TF_GetThreadMgr(ITfThreadMgr **pptim)
+{
+    DWORD id = GetCurrentThreadId();
+    ThreadMgr *cursor;
+
+    TRACE("%p\n", pptim);
+
+    if (!pptim)
+        return E_INVALIDARG;
+
+    EnterCriticalSection(&ThreadMgrCs);
+    LIST_FOR_EACH_ENTRY(cursor, &ThreadMgrList, ThreadMgr, entry)
+    {
+        if (cursor->threadId == id)
+        {
+            ITfThreadMgrEx_AddRef(&cursor->ITfThreadMgrEx_iface);
+            *pptim = (ITfThreadMgr *)&cursor->ITfThreadMgrEx_iface;
+            LeaveCriticalSection(&ThreadMgrCs);
+            return S_OK;
+        }
+    }
+    LeaveCriticalSection(&ThreadMgrCs);
+    *pptim = NULL;
+    return E_FAIL;
+}
