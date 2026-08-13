@@ -32,7 +32,7 @@
 #define F3DAUDIO_H
 
 #ifdef _WIN32
-#define F3DAUDIOAPI
+#define F3DAUDIOAPI __declspec(dllexport)
 #else
 #define F3DAUDIOAPI
 #endif

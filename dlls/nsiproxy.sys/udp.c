@@ -281,6 +281,7 @@ static NTSTATUS udp_endpoint_enumerate_all( void *key_data, UINT key_size, void 
         }
     }
 
+    free( addr_scopes );
     free( endpoints );
     return STATUS_SUCCESS;
 }

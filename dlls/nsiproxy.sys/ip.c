@@ -1637,6 +1637,7 @@ static NTSTATUS ipv4_forward_enumerate_all( void *key_data, UINT key_size, void 
                 {
                     ERR( "struct sockaddr extends beyond the route message, %p > %p\n",
                          addr_ptr + sa->sa_len, next + rtm->rtm_msglen );
+                    break;
                 }
 
                 if (sa->sa_len) addr_ptr += (sa->sa_len + sizeof(int)-1) & ~(sizeof(int)-1);
@@ -1653,7 +1654,7 @@ static NTSTATUS ipv4_forward_enumerate_all( void *key_data, UINT key_size, void 
                      * 5 bytes (1 sa_len, 1 sa_family, 2 sa_port and 1 for the first
                      * byte of sin_addr). */
                     struct sockaddr_in sin = {0};
-                    memcpy( &sin, sa, sa->sa_len );
+                    memcpy( &sin, sa, min( sa->sa_len, sizeof(sin) ) );
                     addr = sin.sin_addr;
                     break;
                 }

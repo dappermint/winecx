@@ -196,9 +196,9 @@ uint32_t FAudio_Release(FAudio *audio)
 			destroy_voice(audio->master);
 		FAudio_OPERATIONSET_ClearAll(audio);
 		FAudio_StopEngine(audio);
-		audio->pFree(audio->decodeCache);
-		audio->pFree(audio->resampleCache);
-		audio->pFree(audio->effectChainCache);
+		audio->pFree(audio->decoded_audio);
+		audio->pFree(audio->resampled_audio);
+		audio->pFree(audio->effect_output);
 		LOG_MUTEX_DESTROY(audio, audio->refLock)
 		FAudio_PlatformDestroyMutex(audio->refLock);
 		LOG_MUTEX_DESTROY(audio, audio->sourceLock)
@@ -251,8 +251,8 @@ uint32_t FAudio_Initialize(
 	audio->initFlags = Flags;
 
 	/* FIXME: This is lazy... */
-	audio->decodeCache = (float*) audio->pMalloc(sizeof(float));
-	audio->resampleCache = (float*) audio->pMalloc(sizeof(float));
+	audio->decoded_audio = (float*) audio->pMalloc(sizeof(float));
+	audio->resampled_audio = (float*) audio->pMalloc(sizeof(float));
 	audio->decodeSamples = 1;
 	audio->resampleSamples = 1;
 
@@ -661,7 +661,7 @@ uint32_t FAudio_CreateSourceVoice(
 		(double) (*ppSourceVoice)->src.format->nSamplesPerSec /
 		(double) audio->master->master.inputSampleRate
 	)) + EXTRA_DECODE_PADDING * (*ppSourceVoice)->src.format->nChannels;
-	FAudio_INTERNAL_ResizeDecodeCache(
+	resize_decoded_audio_buffer(
 		audio,
 		((*ppSourceVoice)->src.decodeSamples + EXTRA_DECODE_PADDING) * (*ppSourceVoice)->src.format->nChannels
 	);
@@ -747,11 +747,11 @@ uint32_t FAudio_CreateSubmixVoice(
 		(double) InputSampleRate /
 		(double) audio->master->master.inputSampleRate
 	) + EXTRA_DECODE_PADDING) * InputChannels;
-	(*ppSubmixVoice)->mix.inputCache = (float*) audio->pMalloc(
+	(*ppSubmixVoice)->mix.input = (float*) audio->pMalloc(
 		sizeof(float) * (*ppSubmixVoice)->mix.inputSamples
 	);
 	FAudio_zero( /* Zero this now, for the first update */
-		(*ppSubmixVoice)->mix.inputCache,
+		(*ppSubmixVoice)->mix.input,
 		sizeof(float) * (*ppSubmixVoice)->mix.inputSamples
 	);
 
@@ -885,10 +885,9 @@ uint32_t FAudio_CreateMasteringVoice(
 	audio->master->outputChannels = audio->mixFormat.Format.nChannels;
 	audio->master->master.inputSampleRate = audio->mixFormat.Format.nSamplesPerSec;
 
-	/* Effect Chain Cache */
 	if ((*ppMasteringVoice)->master.inputChannels != (*ppMasteringVoice)->outputChannels)
 	{
-		(*ppMasteringVoice)->master.effectCache = (float*) audio->pMalloc(
+		(*ppMasteringVoice)->master.effect_input = (float*) audio->pMalloc(
 			sizeof(float) *
 			audio->updateSize *
 			(*ppMasteringVoice)->master.inputChannels
@@ -2521,7 +2520,7 @@ static void destroy_voice(FAudioVoice *voice)
 		);
 
 		/* Delete submix data */
-		voice->audio->pFree(voice->mix.inputCache);
+		voice->audio->pFree(voice->mix.input);
 	}
 	else if (voice->type == FAUDIO_VOICE_MASTER)
 	{
@@ -2530,9 +2529,9 @@ static void destroy_voice(FAudioVoice *voice)
 			FAudio_PlatformQuit(voice->audio->platform);
 			voice->audio->platform = NULL;
 		}
-		if (voice->master.effectCache != NULL)
+		if (voice->master.effect_input != NULL)
 		{
-			voice->audio->pFree(voice->master.effectCache);
+			voice->audio->pFree(voice->master.effect_input);
 		}
 		voice->audio->master = NULL;
 	}
@@ -2933,10 +2932,6 @@ uint32_t FAudioSourceVoice_FlushSourceBuffers(
 	{
 		offset = 1;
 	}
-	else
-	{
-		voice->src.curBufferOffset = 0;
-	}
 
 	if (voice->src.queued_buffer_count > offset)
 	{
@@ -3111,14 +3106,13 @@ uint32_t FAudioSourceVoice_SetSourceSampleRate(
 
 	voice->src.format->nSamplesPerSec = NewSourceSampleRate;
 
-	/* Resize decode cache */
 	newDecodeSamples = (uint32_t) FAudio_ceil(
 		voice->audio->updateSize *
 		(double) voice->src.maxFreqRatio *
 		(double) NewSourceSampleRate /
 		(double) voice->audio->master->master.inputSampleRate
 	) + EXTRA_DECODE_PADDING * voice->src.format->nChannels;
-	FAudio_INTERNAL_ResizeDecodeCache(
+	resize_decoded_audio_buffer(
 		voice->audio,
 		(newDecodeSamples + EXTRA_DECODE_PADDING) * voice->src.format->nChannels
 	);

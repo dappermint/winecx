@@ -28,8 +28,8 @@
 #define FAUDIO_H
 
 #ifdef _WIN32
-#define FAUDIOAPI
-#define FAUDIOCALL
+#define FAUDIOAPI __declspec(dllexport)
+#define FAUDIOCALL __cdecl
 #else
 #define FAUDIOAPI
 #define FAUDIOCALL
@@ -496,7 +496,7 @@ extern FAudioGUID DATAFORMAT_SUBTYPE_IEEE_FLOAT;
 
 #define FAUDIO_ABI_VERSION	 0
 #define FAUDIO_MAJOR_VERSION	26
-#define FAUDIO_MINOR_VERSION	 6
+#define FAUDIO_MINOR_VERSION	 8
 #define FAUDIO_PATCH_VERSION	 0
 
 #define FAUDIO_COMPILED_VERSION ( \

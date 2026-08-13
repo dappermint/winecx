@@ -154,7 +154,7 @@ static HRESULT FAudio_WMAMF_ProcessOutput(
 	return S_OK;
 };
 
-void decode_wma(FAudioVoice *voice, struct queued_buffer *buffer, float *decodeCache, uint32_t samples)
+void decode_wma(FAudioVoice *voice, struct queued_buffer *buffer, float *dst, uint32_t samples)
 {
 	const FAudioWaveFormatExtensible *wfx = (FAudioWaveFormatExtensible *)voice->src.format;
 	size_t samples_pos, samples_size, copy_size = 0;
@@ -227,9 +227,9 @@ void decode_wma(FAudioVoice *voice, struct queued_buffer *buffer, float *decodeC
 	if (impl->output_pos > samples_pos)
 	{
 		copy_size = FAudio_min(impl->output_pos - samples_pos, samples_size);
-		FAudio_memcpy(decodeCache, impl->output_buf + samples_pos, copy_size);
+		FAudio_memcpy(dst, impl->output_buf + samples_pos, copy_size);
 	}
-	FAudio_zero((char *)decodeCache + copy_size, samples_size - copy_size);
+	FAudio_zero((char *)dst + copy_size, samples_size - copy_size);
 	LOG_INFO(
 		voice->audio,
 		"decoded %Ix / %Ix bytes, copied %Ix / %Ix bytes",
@@ -243,7 +243,7 @@ void decode_wma(FAudioVoice *voice, struct queued_buffer *buffer, float *decodeC
 	return;
 
 error:
-	FAudio_zero(decodeCache, samples * voice->src.format->nChannels * sizeof(float));
+	FAudio_zero(dst, samples * voice->src.format->nChannels * sizeof(float));
 	LOG_FUNC_EXIT(voice->audio)
 }
 

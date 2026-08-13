@@ -25,8 +25,11 @@
 #include "config.h"
 
 #include <assert.h>
+#include <dlfcn.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <gst/gst.h>
 #include <gst/video/video.h>
@@ -256,6 +259,38 @@ static ULONG popcount(ULONG val)
 #endif
 }
 
+/* The plugins ship inside the runtime tree, at ../../gstreamer-1.0 relative to
+ * lib/wine/<arch>-unix/. GStreamer's own search path was baked in at build time
+ * and points at the builder's prefix, which exists nowhere else, so without
+ * this gst_init succeeds and the registry comes up empty: every decoder lookup
+ * then fails with nothing naming the cause. The tree is relocatable by design,
+ * so the directory is only knowable at run time, from this module's own path. */
+static void set_bundled_plugin_path(void)
+{
+    static const char rel[] = "/../../gstreamer-1.0";
+    char path[PATH_MAX];
+    Dl_info info;
+    char *slash;
+
+    if (!dladdr((void *)set_bundled_plugin_path, &info) || !info.dli_fname)
+        return;
+    if (strlen(info.dli_fname) >= sizeof(path))
+        return;
+
+    strcpy(path, info.dli_fname);
+    if (!(slash = strrchr(path, '/')))
+        return;
+    *slash = 0;
+
+    if (strlen(path) + sizeof(rel) > sizeof(path))
+        return;
+    strcat(path, rel);
+
+    /* no overwrite: an explicit GST_PLUGIN_SYSTEM_PATH_1_0 stays in charge */
+    setenv("GST_PLUGIN_SYSTEM_PATH_1_0", path, 0);
+    setenv("GST_PLUGIN_SYSTEM_PATH", path, 0);
+}
+
 NTSTATUS wg_init_gstreamer(void *arg)
 {
     struct wg_init_gstreamer_params *params = arg;
@@ -274,6 +309,8 @@ NTSTATUS wg_init_gstreamer(void *arg)
     if (params->err_on)
         setenv("GST_DEBUG", "1", FALSE);
     setenv("GST_DEBUG_NO_COLOR", "1", FALSE);
+
+    set_bundled_plugin_path();
 
     /* GStreamer installs a temporary SEGV handler when it loads plugins
      * to initialize its registry calling exit(-1) when any fault is caught.

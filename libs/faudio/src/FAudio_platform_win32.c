@@ -43,6 +43,7 @@
 #define _SPEAKER_POSITIONS_ /* Defined by SDK. */
 #include "FAudio_internal.h"
 
+
 static CRITICAL_SECTION faudio_cs = { NULL, -1, 0, 0, 0, 0 };
 static IMMDeviceEnumerator *device_enumerator;
 static HRESULT init_hr;
@@ -209,7 +210,7 @@ static HRESULT FAudio_DefaultDeviceIndex(
 	HRESULT hr;
 	uint32_t i, count;
 	WCHAR *default_guid;
-	WCHAR *device_guid;
+	WCHAR *device_guid; 
 
 	/* Open the default device and get its GUID. */
 	hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(
@@ -318,7 +319,7 @@ static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, IMMDevice **device)
 	} else {
 		/* Otherwise, just open the device. */
 		actualIndex = deviceIndex;
-
+	
 	}
 	hr = IMMDeviceCollection_Item(deviceCollection, actualIndex, device);
 	if (FAILED(hr))

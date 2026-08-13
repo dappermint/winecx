@@ -909,9 +909,9 @@ void FACT_INTERNAL_DestroySound(FACTSoundInstance *sound)
 void FACT_INTERNAL_BeginFadeOut(FACTSoundInstance *sound, uint16_t fadeOutMS)
 {
 	/* FIXME: Even for 0ms it seems to want to be in STOPPING for one frame.
-	 * Should we still destroy but defer state changes to the next frame?
-	 * -flibit
-	 */
+ 	 * Should we still destroy but defer state changes to the next frame?
+   	 * -flibit
+     	 */
 #if 0
 	if (fadeOutMS == 0)
 	{

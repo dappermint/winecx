@@ -276,8 +276,8 @@ FAUDIOAPI uint32_t FAudioCreateReverb9(FAPO** ppApo, uint32_t Flags);
 FAUDIOAPI uint32_t FAudioCreateCollectorWithCustomAllocatorEXT(
 	FAPO** ppApo,
 	uint32_t Flags,
-	float* pBuffer,
-	uint32_t bufferLength,
+	float* pBuffer, 
+	uint32_t bufferLength, 
 	FAudioMallocFunc customMalloc,
 	FAudioFreeFunc customFree,
 	FAudioReallocFunc customRealloc

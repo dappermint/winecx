@@ -2092,7 +2092,7 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
     {
         context->Rip = *(ULONG64 *)context->Rsp;
         context->Rsp += sizeof(ULONG64);
-        if (type) *data = NULL;
+        if (type && data) *data = NULL;
         if (handler_ret) *handler_ret = NULL;
         return STATUS_SUCCESS;
     }
