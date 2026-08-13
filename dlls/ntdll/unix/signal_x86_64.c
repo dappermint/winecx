@@ -82,6 +82,10 @@ WINE_DECLARE_DEBUG_CHANNEL(seh);
 #include "dwarf.h"
 
 #ifdef __APPLE__
+/* _thread_set_tsd_base is private API for setting GSBASE, added in macOS 10.12.
+ * See libsyscall/custom/custom.s in xnu. */
+extern void _thread_set_tsd_base(uint64_t);
+
 /* CW Hack 24256 */
 #include <sys/sysctl.h>
 static BOOL is_rosetta2;
@@ -2407,9 +2411,9 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     case TRAP_x86_PRIVINFLT:   /* Invalid opcode exception */
 #ifdef __APPLE__
         /* CW HACK 20186 */
-        if (handle_cet_nop( ucontext, &context.c )) return;
+        if (handle_cet_nop( sigcontext, &context.c )) return;
         /* CW HACK 23427 */
-        if (emulate_xgetbv( ucontext, &context.c )) return;
+        if (emulate_xgetbv( sigcontext, &context.c )) return;
 #endif
         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
         break;
@@ -2776,7 +2780,7 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
             /* On the M3, Rosetta will restore mxcsr to the initial, incorrect
                value from the sigcontext, even if we change it. So we jump to a
                thunk that restores the value from amd64_thread_data. */
-            amd64_thread_data()->mxcsr = direct_mxcsr;
+            amd64_thread_data( get_current_thread_data() )->mxcsr = direct_mxcsr;
             RIP_sig(sigcontext) = (ULONG64)__restore_mxcsr_thunk;
         }
     }
