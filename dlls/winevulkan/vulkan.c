@@ -32,7 +32,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
-static PFN_vkCreateInstance p_vkCreateInstance;
 static PFN_vkEnumerateInstanceVersion p_vkEnumerateInstanceVersion;
 static PFN_vkEnumerateInstanceExtensionProperties p_vkEnumerateInstanceExtensionProperties;
 
@@ -262,7 +261,6 @@ NTSTATUS init_vulkan(void *arg)
     call_vulkan_debug_report_callback = params->call_vulkan_debug_report_callback;
     call_vulkan_debug_utils_callback = params->call_vulkan_debug_utils_callback;
 
-    p_vkCreateInstance = (PFN_vkCreateInstance)vk_funcs->p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
     p_vkEnumerateInstanceVersion = (PFN_vkEnumerateInstanceVersion)vk_funcs->p_vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceVersion");
     p_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)vk_funcs->p_vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceExtensionProperties");
 
@@ -470,13 +468,12 @@ void wine_vkFreeCommandBuffers(VkDevice client_device, VkCommandPool command_poo
     wine_vk_free_command_buffers(device, pool, count, buffers);
 }
 
-VkResult wine_vkCreateCommandPool(VkDevice client_device, const VkCommandPoolCreateInfo *info,
-                                  const VkAllocationCallbacks *allocator, VkCommandPool *command_pool,
-                                  void *client_ptr)
+VkResult wine_vkCreateCommandPool(VkDevice client_device, const VkCommandPoolCreateInfo *info, const VkAllocationCallbacks *allocator,
+                                  VkCommandPool *client_command_pool_ptr)
 {
+    struct vk_command_pool *client_command_pool = command_pool_from_handle(*client_command_pool_ptr);
     struct vulkan_device *device = vulkan_device_from_handle(client_device);
     struct vulkan_instance *instance = device->physical_device->instance;
-    struct vk_command_pool *client_command_pool = client_ptr;
     VkCommandPool host_command_pool;
     struct wine_cmd_pool *object;
     VkResult res;
@@ -497,7 +494,6 @@ VkResult wine_vkCreateCommandPool(VkDevice client_device, const VkCommandPoolCre
     vulkan_object_init_ptr(&object->obj, host_command_pool, &client_command_pool->obj);
     instance->p_insert_object(instance, &object->obj);
 
-    *command_pool = object->client.command_pool;
     return VK_SUCCESS;
 }
 
@@ -663,13 +659,9 @@ static VkResult wine_vk_get_time_domains(struct vulkan_physical_device *physical
                                          VkTimeDomainEXT *time_domains,
                                          VkResult (*get_domains)(VkPhysicalDevice, uint32_t *, VkTimeDomainEXT *))
 {
-    BOOL supports_device = FALSE, supports_monotonic = FALSE, supports_monotonic_raw = FALSE;
     const VkTimeDomainEXT performance_counter_domain = get_performance_counter_time_domain();
+    uint32_t host_time_domain_count, count, capacity = *time_domain_count;
     VkTimeDomainEXT *host_time_domains;
-    uint32_t host_time_domain_count;
-    VkTimeDomainEXT out_time_domains[2];
-    uint32_t out_time_domain_count;
-    unsigned int i;
     VkResult res;
 
     /* Find out the time domains supported on the host */
@@ -687,46 +679,20 @@ static VkResult wine_vk_get_time_domains(struct vulkan_physical_device *physical
         return res;
     }
 
-    for (i = 0; i < host_time_domain_count; i++)
+    count = 0;
+    for (uint32_t i = 0; i < host_time_domain_count; i++)
     {
-        if (host_time_domains[i] == VK_TIME_DOMAIN_DEVICE_EXT)
-            supports_device = TRUE;
-        else if (host_time_domains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT)
-            supports_monotonic = TRUE;
-        else if (host_time_domains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT)
-            supports_monotonic_raw = TRUE;
-        else
-            FIXME("Unknown time domain %d\n", host_time_domains[i]);
+        VkTimeDomainEXT domain = host_time_domains[i];
+        if (domain == performance_counter_domain) domain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+        if (domain == VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR) continue;
+        if (domain == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR) continue;
+        if (++count > capacity) continue;
+        if (time_domains) time_domains[count - 1] = domain;
     }
+    res = time_domains && count > capacity ? VK_INCOMPLETE : VK_SUCCESS;
+    *time_domain_count = count;
 
     free(host_time_domains);
-
-    out_time_domain_count = 0;
-
-    /* Map our monotonic times -> QPC */
-    if (supports_monotonic_raw && performance_counter_domain == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT)
-        out_time_domains[out_time_domain_count++] = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
-    else if (supports_monotonic && performance_counter_domain == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT)
-        out_time_domains[out_time_domain_count++] = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
-    else
-        FIXME("VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT not supported on this platform.\n");
-
-    /* Forward the device domain time */
-    if (supports_device)
-        out_time_domains[out_time_domain_count++] = VK_TIME_DOMAIN_DEVICE_EXT;
-
-    /* Send the count/domains back to the app */
-    if (!time_domains)
-    {
-        *time_domain_count = out_time_domain_count;
-        return VK_SUCCESS;
-    }
-
-    for (i = 0; i < min(*time_domain_count, out_time_domain_count); i++)
-        time_domains[i] = out_time_domains[i];
-
-    res = *time_domain_count < out_time_domain_count ? VK_INCOMPLETE : VK_SUCCESS;
-    *time_domain_count = out_time_domain_count;
     return res;
 }
 
@@ -780,7 +746,50 @@ VkResult wine_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR(VkPhysicalDevice cl
                                     instance->p_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR);
 }
 
+VkResult wine_vkGetSwapchainTimeDomainPropertiesEXT(VkDevice client_device, VkSwapchainKHR client_swapchain, VkSwapchainTimeDomainPropertiesEXT *properties, uint64_t *counter)
+{
+    struct vulkan_swapchain *swapchain = vulkan_swapchain_from_handle(client_swapchain);
+    struct vulkan_device *device = vulkan_device_from_handle(client_device);
+    VkSwapchainTimeDomainPropertiesEXT host_properties = *properties;
+    uint64_t capacity = properties->timeDomainCount;
+    VkResult res;
 
+    TRACE("device %p, swapchain %p, properties %p, counter %p\n", device, swapchain, properties, counter);
+
+    host_properties.timeDomainCount = 0;
+    host_properties.pTimeDomainIds = NULL;
+    host_properties.pTimeDomains = NULL;
+
+    res = device->p_vkGetSwapchainTimeDomainPropertiesEXT(device->host.device, swapchain->host.swapchain, &host_properties, counter);
+    if (res && res != VK_INCOMPLETE) return res;
+
+    if (!(host_properties.pTimeDomainIds = calloc(host_properties.timeDomainCount, sizeof(*host_properties.pTimeDomainIds))))
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (!(host_properties.pTimeDomains = calloc(host_properties.timeDomainCount, sizeof(*host_properties.pTimeDomains))))
+    {
+        free(host_properties.pTimeDomainIds);
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    res = device->p_vkGetSwapchainTimeDomainPropertiesEXT(device->host.device, swapchain->host.swapchain, &host_properties, counter);
+    if (res && res != VK_INCOMPLETE) goto done;
+
+    properties->timeDomainCount = 0;
+    for (uint64_t i = 0; i < host_properties.timeDomainCount; i++)
+    {
+        if (host_properties.pTimeDomains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR) continue;
+        if (host_properties.pTimeDomains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR) continue;
+        if (++properties->timeDomainCount > capacity) continue;
+        if (properties->pTimeDomains) properties->pTimeDomains[properties->timeDomainCount - 1] = host_properties.pTimeDomains[i];
+        if (properties->pTimeDomainIds) properties->pTimeDomainIds[properties->timeDomainCount - 1] = host_properties.pTimeDomainIds[i];
+    }
+    if (!properties->pTimeDomains && !properties->pTimeDomainIds) res = VK_SUCCESS;
+    else res = properties->timeDomainCount > capacity ? VK_INCOMPLETE : VK_SUCCESS;
+
+done:
+    free(host_properties.pTimeDomainIds);
+    free(host_properties.pTimeDomains);
+    return res;
+}
 
 void wine_vkGetPhysicalDeviceExternalSemaphoreProperties(VkPhysicalDevice client_physical_device,
                                                          const VkPhysicalDeviceExternalSemaphoreInfo *info,

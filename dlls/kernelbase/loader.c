@@ -23,7 +23,6 @@
 #include <stdarg.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnls.h"
@@ -152,23 +151,29 @@ failed:
 static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
 {
     const DWORD unsupported_flags = LOAD_IGNORE_CODE_AUTHZ_LEVEL | LOAD_LIBRARY_REQUIRE_SIGNED_TARGET;
+    const ULONG load_library_search_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS
+                | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
     NTSTATUS status;
     HMODULE module;
     WCHAR *load_path, *dummy;
+    DWORD load_flags = 0, search_flags;
 
     if (flags & unsupported_flags) FIXME( "unsupported flag(s) used %#08lx\n", flags );
-
-    if (!set_ntstatus( LdrGetDllPath( libname->Buffer, flags, &load_path, &dummy ))) return 0;
 
     if (flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
                  LOAD_LIBRARY_AS_IMAGE_RESOURCE))
     {
+        if (!set_ntstatus( LdrGetDllPath( libname->Buffer, flags, &load_path, &dummy ))) return 0;
         if (LdrGetDllHandleEx( 0, load_path, NULL, libname, &module ))
             load_library_as_datafile( load_path, flags, libname->Buffer, &module );
+        RtlReleasePath( load_path );
     }
     else
     {
-        status = LdrLoadDll( load_path, flags, libname, &module );
+        search_flags = flags & load_library_search_flags;
+        if (flags & DONT_RESOLVE_DLL_REFERENCES) load_flags |= LDR_DONT_RESOLVE_REFS;
+        status = LdrLoadDll( (void *)((ULONG_PTR)search_flags | 1), &load_flags, libname, &module );
         if (!set_ntstatus( status ))
         {
             module = 0;
@@ -176,8 +181,6 @@ static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
                 SetLastError( ERROR_DLL_NOT_FOUND );
         }
     }
-
-    RtlReleasePath( load_path );
     return module;
 }
 
@@ -312,7 +315,14 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetModuleFileNameW( HMODULE module, LPWSTR filena
     name.Buffer = filename;
     name.MaximumLength = min( size, UNICODE_STRING_MAX_CHARS ) * sizeof(WCHAR);
     status = LdrGetDllFullName( module, &name );
-    if (!status || status == STATUS_BUFFER_TOO_SMALL) len = name.Length / sizeof(WCHAR);
+    if (!status || status == STATUS_BUFFER_TOO_SMALL)
+    {
+        len = name.Length / sizeof(WCHAR);
+        /* LdrGetDllFullName calls RtlCopyUnicodeString which should terminate
+           if there's space, otherwise: */
+        if (status == STATUS_BUFFER_TOO_SMALL && size > 0)
+            filename[size - 1] = 0;
+    }
     SetLastError( RtlNtStatusToDosError( status ));
 done:
     TRACE( "%s\n", debugstr_wn(filename, len) );

@@ -308,8 +308,24 @@ system_fallback_config[] =
     { "1C00-1C4F",              L"Noto Sans Lepcha" },
     { "1C50-1C7F",              L"Noto Sans Ol Chiki" },
 
+    /* Phonetic Extensions            - 1D00-1D7F
+       Phonetic Extensions Supplement - 1D80-1DBF
+       Latin Extended Additional      - 1E00-1EFF */
+    { "1D00-1D7F, 1D80-1DBF, "
+      "1E00-1EFF",              L"Noto Sans" },
+
+    /* Arrows - 2190-21FF */
+    { "2190-21FF",              L"Noto Sans Symbols" },
+
+    /* Miscellaneous Symbols - 2600-26FF */
+    { "2600-26FF",              L"Noto Sans Symbols2, Noto Sans Symbols 2, Noto Sans Symbols" },
+
     /* Dingbats - 2700-27BF */
     { "2700-27BF",              L"Noto Sans Symbols2, Noto Sans Symbols 2" },
+
+    /* Misc Symbols and Arrows - 2B00-2BFF
+       Supplemental Arrows-C   - 1F800-1F8FF */
+    { "2B00-2BFF, 1F800-1F8FF", L"Noto Sans Symbols2, Noto Sans Symbols 2" },
 
     { "2C80-2CFF",              L"Noto Sans Coptic" },
     { "2D30-2D7F",              L"Noto Sans Tifinagh" },
@@ -533,14 +549,14 @@ static HRESULT fallback_locale_add_mapping(struct fallback_locale *locale, size_
 
 /* TODO: potentially needs improvement to consider partially matching locale names. */
 static struct fallback_locale * font_fallback_get_locale(const struct list *locales,
-        const WCHAR *locale_name)
+        const WCHAR *locale_name, bool use_neutral)
 {
     struct fallback_locale *locale, *neutral = NULL;
 
     LIST_FOR_EACH_ENTRY(locale, locales, struct fallback_locale, entry)
     {
         if (!wcsicmp(locale->name, locale_name)) return locale;
-        if (!*locale->name) neutral = locale;
+        if (use_neutral && !*locale->name) neutral = locale;
     }
 
     return neutral;
@@ -633,7 +649,7 @@ static const struct fallback_mapping * find_fallback_mapping(const struct fallba
     /* Mapping wasn't found for specific locale, try with neutral one. This will only recurse once. */
     if (*locale->name)
     {
-        locale = font_fallback_get_locale(&fallback->locales, L"");
+        locale = font_fallback_get_locale(&fallback->locales, L"", true);
         mapping = find_fallback_mapping(fallback, locale, ch);
     }
 
@@ -2525,7 +2541,7 @@ static HRESULT fallback_map_characters(const struct dwrite_fontfallback *fallbac
     if (!locale_name) locale_name = L"";
 
     /* Lookup locale entry once, if specific locale is missing neutral one will be returned. */
-    locale = font_fallback_get_locale(&data->locales, locale_name);
+    locale = font_fallback_get_locale(&data->locales, locale_name, true);
 
     if (FAILED(hr = text_source_context_init(&context, source, position, length))) return hr;
 
@@ -2553,14 +2569,13 @@ static HRESULT fallback_map_characters(const struct dwrite_fontfallback *fallbac
         if (SUCCEEDED(create_matching_font(mapping->collection ? mapping->collection : fallback->systemcollection,
                 mapping->families[i], weight, style, stretch, &IID_IDWriteFont3, (void **)&font)))
         {
-            if (!(mapped = fallback_font_get_supported_length(font, source, position, mapped)))
+            if (!(*ret_length = fallback_font_get_supported_length(font, source, position, mapped)))
             {
                 IDWriteFont3_Release(font);
                 continue;
             }
 
             *ret_font = (IDWriteFont *)font;
-            *ret_length = mapped;
             *scale = mapping->scale;
 
             return S_OK;
@@ -2764,7 +2779,7 @@ static struct fallback_locale * fallback_builder_add_locale(struct dwrite_fontfa
     struct fallback_locale *locale;
 
     if (!locale_name) locale_name = L"";
-    if ((locale = font_fallback_get_locale(&builder->data.locales, locale_name))) return locale;
+    if ((locale = font_fallback_get_locale(&builder->data.locales, locale_name, false))) return locale;
     if (!(locale = calloc(1, sizeof(*locale)))) return NULL;
     lstrcpynW(locale->name, locale_name, ARRAY_SIZE(locale->name));
     list_add_tail(&builder->data.locales, &locale->entry);

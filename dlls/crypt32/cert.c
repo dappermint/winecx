@@ -21,7 +21,6 @@
 #include <stdarg.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -276,6 +275,8 @@ static BOOL add_cert_to_store(WINECRYPT_CERTSTORE *store, const CERT_CONTEXT *ce
         CertFreeCertificateContext(existing);
         return FALSE;
     }
+
+    CertControlStore(store, CERT_STORE_CTRL_COMMIT_FORCE_FLAG, CERT_STORE_CTRL_COMMIT, NULL);
 
     if(inherit_props)
         Context_CopyProperties(context_ptr(new_context), existing);
@@ -651,8 +652,38 @@ BOOL WINAPI CertGetCertificateContextProperty(PCCERT_CONTEXT pCertContext,
         ret = CertContext_GetProperty(cert,
          CERT_KEY_CONTEXT_PROP_ID, &keyContext, &size);
         if (ret)
-            ret = CertContext_CopyParam(pvData, pcbData, &keyContext.hCryptProv,
-             sizeof(keyContext.hCryptProv));
+        {
+            if (keyContext.dwKeySpec == CERT_NCRYPT_KEY_SPEC)
+            {
+                SetLastError(CRYPT_E_NOT_FOUND);
+                ret = FALSE;
+            }
+            else
+                ret = CertContext_CopyParam(pvData, pcbData, &keyContext.hCryptProv,
+                 sizeof(keyContext.hCryptProv));
+        }
+        break;
+    }
+    case CERT_NCRYPT_KEY_HANDLE_PROP_ID:
+    {
+        CERT_KEY_CONTEXT keyContext;
+        DWORD size = sizeof(keyContext);
+
+        ret = CertContext_GetProperty(cert,
+         CERT_KEY_CONTEXT_PROP_ID, &keyContext, &size);
+        if (ret)
+        {
+            if (keyContext.dwKeySpec != CERT_NCRYPT_KEY_SPEC)
+            {
+                SetLastError(CRYPT_E_NOT_FOUND);
+                ret = FALSE;
+            }
+            else
+                ret = CertContext_CopyParam(pvData, pcbData, &keyContext.hCryptProv,
+                 sizeof(keyContext.hCryptProv));
+        }
+        else
+            SetLastError(CRYPT_E_NOT_FOUND);
         break;
     }
     case CERT_KEY_PROV_INFO_PROP_ID:
@@ -835,6 +866,23 @@ static BOOL CertContext_SetProperty(cert_t *cert, DWORD dwPropId,
             }
             ret = CertContext_SetProperty(cert, CERT_KEY_CONTEXT_PROP_ID,
              0, &keyContext);
+            break;
+        }
+        case CERT_NCRYPT_KEY_HANDLE_PROP_ID:
+        {
+            CERT_KEY_CONTEXT keyContext;
+
+            if (!pvData)
+            {
+                ContextPropertyList_RemoveProperty(cert->base.properties,
+                 CERT_KEY_CONTEXT_PROP_ID);
+                ret = TRUE;
+                break;
+            }
+            keyContext.cbSize = sizeof(keyContext);
+            keyContext.hNCryptKey = (NCRYPT_KEY_HANDLE)pvData;
+            keyContext.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
+            ret = CertContext_SetKeyContextProperty(cert->base.properties, &keyContext);
             break;
         }
         default:
@@ -3711,53 +3759,37 @@ static void CRYPT_MakeCertInfo(PCERT_INFO info, const CRYPT_DATA_BLOB *pSerialNu
     }
 }
  
-typedef RPC_STATUS (RPC_ENTRY *UuidCreateFunc)(UUID *);
-typedef RPC_STATUS (RPC_ENTRY *UuidToStringFunc)(UUID *, unsigned char **);
-typedef RPC_STATUS (RPC_ENTRY *RpcStringFreeFunc)(unsigned char **);
+WCHAR *CRYPT32_AllocateUniqueContainerName(void)
+{
+    UUID uuid;
+    RPC_WSTR uuid_str = NULL;
+    WCHAR *ret = NULL;
+    RPC_STATUS status;
+
+    status = UuidCreate( &uuid );
+    if (status != RPC_S_OK && status != RPC_S_UUID_LOCAL_ONLY) return NULL;
+    if (UuidToStringW( &uuid, &uuid_str ) != RPC_S_OK) return NULL;
+
+    if ((ret = CryptMemAlloc( (lstrlenW( (WCHAR *)uuid_str ) + 1) * sizeof(WCHAR) )))
+        lstrcpyW( ret, (WCHAR *)uuid_str );
+    RpcStringFreeW( &uuid_str );
+    return ret;
+}
 
 static HCRYPTPROV CRYPT_CreateKeyProv(void)
 {
     HCRYPTPROV hProv = 0;
-    HMODULE rpcrt = LoadLibraryW(L"rpcrt4");
+    WCHAR *container = CRYPT32_AllocateUniqueContainerName();
 
-    if (rpcrt)
+    if (!container) return 0;
+
+    if (CryptAcquireContextW( &hProv, container, MS_STRONG_PROV_W, PROV_RSA_FULL, CRYPT_NEWKEYSET ))
     {
-        UuidCreateFunc uuidCreate = (UuidCreateFunc)GetProcAddress(rpcrt,
-         "UuidCreate");
-        UuidToStringFunc uuidToString = (UuidToStringFunc)GetProcAddress(rpcrt,
-         "UuidToStringA");
-        RpcStringFreeFunc rpcStringFree = (RpcStringFreeFunc)GetProcAddress(
-         rpcrt, "RpcStringFreeA");
-
-        if (uuidCreate && uuidToString && rpcStringFree)
-        {
-            UUID uuid;
-            RPC_STATUS status = uuidCreate(&uuid);
-
-            if (status == RPC_S_OK || status == RPC_S_UUID_LOCAL_ONLY)
-            {
-                unsigned char *uuidStr;
-
-                status = uuidToString(&uuid, &uuidStr);
-                if (status == RPC_S_OK)
-                {
-                    BOOL ret = CryptAcquireContextA(&hProv, (LPCSTR)uuidStr,
-                     MS_DEF_PROV_A, PROV_RSA_FULL, CRYPT_NEWKEYSET);
-
-                    if (ret)
-                    {
-                        HCRYPTKEY key;
-
-                        ret = CryptGenKey(hProv, AT_SIGNATURE, 0, &key);
-                        if (ret)
-                            CryptDestroyKey(key);
-                    }
-                    rpcStringFree(&uuidStr);
-                }
-            }
-        }
-        FreeLibrary(rpcrt);
+        HCRYPTKEY key;
+        if (CryptGenKey( hProv, AT_SIGNATURE, 0, &key ))
+            CryptDestroyKey( key );
     }
+    CryptMemFree( container );
     return hProv;
 }
 

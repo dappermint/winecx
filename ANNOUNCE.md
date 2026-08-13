@@ -1,12 +1,13 @@
-The Wine team is proud to announce that the stable release Wine 11.0
-is now available.
+The Wine development release 11.15 is now available.
 
-This release represents a year of development effort, around 6,300
-individual changes, and more than 600 bug fixes. It contains a large
-number of improvements that are listed below. The main highlights are
-the NTSYNC support and the completion of the new WoW64 architecture.
+What's new in this release:
+  - More KDF algorithms in BCrypt.
+  - Support for ARM64EC build in Mingw mode.
+  - More format conversions in WindowsCodecs.
+  - Support for local NTLM authentication.
+  - Various bug fixes.
 
-The source is available at <https://dl.winehq.org/wine/source/11.0/wine-11.0.tar.xz>
+The source is available at <https://dl.winehq.org/wine/source/11.x/wine-11.15.tar.xz>
 
 Binary packages for various distributions will be available
 from the respective [download sites][1].
@@ -18,435 +19,349 @@ See the file [AUTHORS][3] for the complete list.
 
 [1]: https://gitlab.winehq.org/wine/wine/-/wikis/Download
 [2]: https://gitlab.winehq.org/wine/wine/-/wikis/Documentation
-[3]: https://gitlab.winehq.org/wine/wine/-/raw/wine-11.0/AUTHORS
+[3]: https://gitlab.winehq.org/wine/wine/-/raw/wine-11.15/AUTHORS
 
 ----------------------------------------------------------------
 
-## What's new in Wine 11.0
-
-### WoW64
-
-- The _new WoW64_ mode that was first introduced as experimental feature in
-  Wine 9.0 is considered fully supported, and essentially has feature parity
-  with the old WoW64 mode.
-
-- 16-bit applications are supported in the new WoW64 mode.
-
-- It is possible to force an old WoW64 installation to run in new WoW64 mode
-  by setting the variable `WINEARCH=wow64`. This requires the prefix to have
-  been created as 64-bit (the default).
-
-- Pure 32-bit prefixes created with `WINEARCH=win32` are deprecated, and are
-  not supported in new WoW64 mode.
-
-- The `wine64` loader binary is removed, in favor of a single `wine` loader
-  that selects the correct mode based on the binary being executed. For
-  binaries that have both 32-bit and 64-bit versions installed, it defaults
-  to 64-bit. The 32-bit version can then be launched with an explicit path,
-  e.g. `wine c:\\windows\\syswow64\\notepad.exe`.
-
-
-### Synchronization / Threading
-
-- The NTSync Linux kernel module is used when available, to improve the
-  performance of synchronization primitives. The needed kernel module is
-  shipped with the Linux kernel starting from version 6.14.
-
-- Thread priority changes are implemented on Linux and macOS.  On Linux,
-  this is constrained by the system nice limit, and current distributions
-  require some configuration to change the nice hard limit to a negative
-  value (in the -19,-1 range, where -5 is usually enough, and anything lower
-  is not recommended). See `man limits.conf(5)` for more information.
-
-- NTDLL synchronization barriers are implemented.
-
-- On macOS, the `%gs` register is swapped in the syscall dispatcher.  This
-  avoids conflicts between the Windows TEB and the macOS thread descriptor.
-
-
-### Kernel
-
-- NT Reparse Points are implemented, with support for the mount point and
-  symlink types of reparse points.
-
-- Write Watches take advantage of userfaultfd on Linux if available, to
-  avoid the cost of handling page faults in user space.
-
-- NT system calls use the same syscall numbering as recent Windows, to
-  support applications that hardcode syscall numbers.
-
-- On ARM64, there is support for simulating a 4K page size on top of larger
-  host pages (typically 16K or 64K). This works for simple applications, but
-  because it is not possible to completely hide the differences, more
-  demanding applications may not work correctly. Using a 4K-page kernel is
-  strongly recommended.
-
-
-### Graphics
-
-- The OSMesa dependency is removed, and OpenGL bitmap rendering is
-  implemented with the hardware accelerated OpenGL runtime.
-
-- The EGL OpenGL backend is extended, and used by default on the X11
-  platform. The GLX backend is deprecated but remains available, and is used
-  as fallback if EGL isn't available. It can also be forced by setting the
-  value `UseEGL=N` in the `HKCU\Software\Wine\X11 Driver` registry key.
-
-- The `VK_KHR_external_memory_win32`, `VK_KHR_external_semaphore_win32`,
-  `VK_KHR_external_fence_win32`, `VK_KHR_win32_keyed_mutex` extensions and
-  the related D3DKMT APIs are implemented.
-
-- In new WoW64 mode, OpenGL buffers are mapped to 32-bit memory space using
-  Vulkan extensions if available.
-
-- Front buffer OpenGL rendering is emulated for platforms that don't support
-  it natively.
-
-- OpenGL context sharing implementation in wglShareLists is improved.
-
-- The Vulkan API version 1.4.335 is supported.
-
-- Image metadata handling is better supported in WindowsCodecs.
-
-- Many more conversions between various pixel formats are supported in
-  WindowsCodecs.
-
-
-### Desktop integration
-
-- X11 Window Manager integration is improved: window activation requests are
-  sent to the Window Manager, and the EWMH protocol is used to keep the X11
-  and the Win32 active windows consistent.
-
-- Exclusive fullscreen mode is supported, and D3D fullscreen mode is
-  improved, especially improving older DDraw games.
-
-- Shaped and color-keyed windows are supported in the experimental Wayland
-  driver.
-
-- Performance of several windowing-related functions is improved, using
-  shared memory for communication between processes.
-
-- Clipboard support is implemented in the Wayland driver.
-
-- Input Methods are supported in the Wayland driver.
-
-
-### Direct3D
-
-- Hardware decoding of H.264 video through Direct3D 11 video APIs is
-  implemented over Vulkan Video. Note that the Vulkan renderer must be used.
-  As in previous Wine versions, the Vulkan renderer can be used by setting
-  `renderer` to `vulkan` using the `Direct3D` registry key or
-  `WINE_D3D_CONFIG` environment variable.
-
-- Direct3D 11 sampler minimum/maximum reduction filtering is implemented if
-  `GL_ARB_texture_filter_minmax` is available (when using the GL renderer)
-  or `VK_EXT_sampler_filter_minmax` (when using the Vulkan renderer).
-
-- The following legacy Direct3D features are implemented for the Vulkan
-  renderer:
-  - Point size control.
-  - Point sprite control.
-  - Vertex blending.
-  - Fixed-function bump mapping.
-  - Color keying in draws.
-  - Flat shading.
-  - Alpha test.
-  - User clip planes.
-  - Several resource formats.
-
-  Additionally, the bundled copy of vkd3d-shader includes many improvements
-  for Shader Model 1, 2, and 3 shaders, including notably support for Shader
-  Model 1 pixel shaders and basic Shader Model 1 texturing.  The Vulkan
-  renderer is not yet at parity with the GL renderer, and is therefore not
-  yet the default.
-
-
-### Direct3D helper libraries
-
-- `D3DXSaveSurfaceToFileInMemory` is reimplemented for PNG, JPEG and BMP
-  files, enabling support for formats and other edge cases not supported by
-  WindowsCodecs. It also supports saving surfaces to TARGA files.
-
-- D3DX 11 texture loading functions are implemented, using code shared with
-  earlier D3DX versions.
-
-- Box filtering is supported in all versions.
-
-- `D3DXSaveTextureToFileInMemory` supports saving textures to DDS files.
-
-- D3DX 9 supports reading 1-bit, 2-bit, and 4-bit indexed pixel formats, as
-  well as the CxV8U8 format.
-
-- D3DX 10 and 11 support compressing and decompressing BC4 and BC5 formats.
-
-- D3DX 10 and 11 support generating mipmap levels while loading textures.
-
-- `ID3DXEffect::SetRawValue()` is partially implemented.
-
-- `ID3DXSkinInfo::UpdateSkinnedMesh()` is implemented.
-
-
-### Input / HID devices
-
-- Compatibility with more Joystick devices is improved through the `hidraw`
-  backend. Per-vendor and per-device registry options are available to
-  selectively opt into the hidraw backend.
-
-- Force feedback support is improved, with increased compatibility for
-  joysticks and driving wheels, and better performance.
-
-- Better support for gamepads in the Windows.Gaming.Input API and with the
-  evdev backend when SDL is not available or disabled.
-
-- There is a configuration tab for the Windows.Gaming.Input API in the Game
-  Controllers Control Panel applet.
-
-- DirectInput compatibility with older games that use action maps and device
-  semantics is improved.
-
-- More device enumeration APIs from Windows.Devices.Enumeration and cfgmgr32
-  are implemented.
-
-
-### Bluetooth
-
-- The Bluetooth driver supports scanning and configuring host device
-  discoverability, with some basic support for pairing via both the API and
-  a wizard. At this point, this is only supported on Linux systems using
-  BlueZ.
-
-- Bluetooth radios and devices (both classic and low-energy) are visible to
-  Windows applications.
-
-- Applications can make low-level RFCOMM connections to remote devices using
-  winsock APIs.
-
-- There is initial support for Bluetooth Low Energy (BLE) Generic Attribute
-  Profile (GATT) services and characteristics, making them visible through
-  the Win32 BLE APIs.
-
-
-### Scanner support
-
-- `DAT_IMAGENATIVEXFER` is supported.
-
-- Scanner selection and configuration are saved in the registry.
-
-- TWAIN 2.0 API for scanning is implemented, which allows scanning to work
-  in 64-bit applications.
-
-- Multi-page and Automatic Document Feed scans are supported.
-
-- There is a user interface showing scanning progress and error messages.
-
-- The scanner user interface no longer blocks the application using it.
-
-- Windows-native scanner drivers can be loaded if they're installed in Wine.
-
-
-### Multimedia
-
-- The Multimedia Streaming library implements a custom allocator for
-  DirectDraw streams, reducing the number of buffer copies required for
-  filters which support a downstream custom allocator.
-
-- Dynamic format change is supported in the DMO Wrapper, AVI Decoder, and
-  GStreamer-based demuxer and transform filters.
-
-- GStreamer-based demuxer filters support the Indeo 5.0 codec.
-
-- The DirectSound Renderer filter more properly signals end-of-stream.
-  Previously end-of-stream could be signaled too early, clipping the end of
-  an audio stream.
-
-- The ASF Reader filter supports seeking.
-
-- The AVI Decoder filter supports nontrivial source and destination
-  rectangles.
-
-
-### DirectMusic
-
-- SoundFont(SF2) supports more features:
-  - Parsing of preset, instrument and default modulators.
-  - Layering support required for many SF2 instruments.
-  - Reuse of downloaded waves and zero-copy access sample data to prevent
-    out-of-memory errors.
-  - Instrument normalization.
-
-- The Synthesizer is improved:
-  - The latency clock is derived from the master clock to fix uneven
-    playback in certain tracks.
-  - Voice shutdown is instant and the synth better handles channel pressure
-    events and LFO connections.
-  - Setting the volume is supported and is automatically done when creating
-    a synth or adding a port.
-
-- The DX7 version of the Style form is supported.
-
-- Cache management improvements in the loader.
-
-- More MIDI meta events are supported.
-
-
-### Mono / .NET / WinRT
-
-- XNA4 applications run based on SDL3, and render using the new SDL_GPU API
-  by default.
-
-- A text layout engine supporting System.Windows.Documents APIs is added to
-  WPF (Windows Presentation Framework).
-
-- Theming works in Windows Forms.
-
-- WinRT metadata files can be generated by `widl`, and there is an initial
-  implementation of the loader classes.
-
-- WinRT C++ exceptions are supported.
-
-
-### Internationalization
-
-- Locale data is generated from the Unicode CLDR database version 48. The
-  following additional locales are supported: `bqi-IR`, `bua-RU`, `cop-EG`,
-  `ht-HT`, `kek-GT`, `lzz-TR`, `mww-Hmnp-US`, `oka-CA`, `pi-Latn-GB`,
-  `pms-IT`, `sgs-LT`, `suz-Deva-NP`, and `suz-Sunu-NP`,
-
-- Unicode character tables are based on version 17.0.0 of the Unicode
-  Standard.
-
-- The timezone data is based on version 2025a of the IANA timezone database.
-
-
-### Internet and networking
-
-- MSHTML exposes DOM attributes as proper DOM nodes in standards-compliant
-  mode.
-
-- JavaScript typed arrays are supported.
-
-- The MSHTML objects DOMParser, XDomainRequest and msCrypto are implemented.
-
-- Ping is implemented for ICMPv6.
-
-
-### Databases
-
-- MSADO supports writing changes to the database.
-
-- Most of the MSADO Recordset functions are implemented.
-
-- ODBC remaps Unicode strings to support ANSI-only Win32 drivers.
-
-
-### Debugging
-
-- The PDB file loader in DbgHelp is reimplemented, to support large files
-  (> 4G), faster loading, and use fewer memory resources.
-
-- NT system calls can be traced with `WINEDEBUG=syscall`. Unlike
-  `WINEDEBUG=relay`, this is transparent to the application, and avoids
-  breaking applications that hook system call entry points.
-
-- It is possible to generate both DWARF and PDB debug information in a
-  single build.
-
-
-### Builtin applications
-
-- The Audio tab of WineCfg allows configuring the default MIDI device.
-
-- The Command Prompt tool `cmd` can create reparse points with `mklink /j`,
-  and display them in directory listings.
-
-- The Command Prompt tool `cmd` supports more complex instructions, and file
-  name auto completion in interactive prompt.
-
-- The Console Hosting application `conhost` supports F1 and F3 keys for
-  history retrieval.
-
-- The `timeout` application is implemented.
-
-- The `find` tool supports options `/c` (display match count) and `/i` (case
-  insensitive matches).
-
-- The `whoami` tool supports output format specifiers.
-
-- There is a basic implementation of the `subst` command
-
-- There is an initial implementation of the `runas` tool.
-
-
-### Miscellaneous
-
-- Common Controls version 5 and version 6 are fully separated DLLs, and
-  v6-only features are removed from the v5 DLL for better compatibility.
-
-- The PBKDF2 key derivation algorithm is supported in BCrypt.
-
-- The well-known shell folders `UserProgramFiles`, `AccountPictures` and
-  `Screenshots` are supported.
-
-
-### Development tools
-
-- The IDL compiler can generate Windows Runtime metadata files (`.winmd`)
-  with the `--winmd` option
-
-- The `winedump` tool supports dumping MUI resources, syscall numbers,
-  embedded NE modules, and large PDB files (>4G).
-
-- The `wine/unixlib.h` header is installed as part of the development
-  package, as a first step towards supporting use of the Unixlib interface
-  in third-party modules. This is still a work in progress.
-
-
-### Build infrastructure
-
-- The X11-derived `install-sh` script is reimplemented in C, to enable
-  installing several files in a single program invocation. This speeds up
-  the file copying phase of `make install` by an order of magnitude.
-
-- Compiler exceptions are used to implement `__try/__except` blocks when
-  building with Clang for 64-bit MSVC targets.
-
-- The WineHQ Gitlab CI supports ARM64 builds.
-
-
-### Bundled libraries
-
-- The LLVM Compiler-RT runtime library version 8.0.1 is bundled, and used
-  when building modules in MSVC mode.
-
-- The TomCrypt library version 1.18.2 is bundled and used to implement
-  cryptographic primitives in the RsaEnh and BCrypt modules.
-
-- Vkd3d is updated to the upstream release [1.18][4].
-
-- Faudio is updated to the upstream release 25.12.
-
-- FluidSynth is updated to the upstream release 2.4.2.
-
-- LCMS2 is updated to the upstream release 2.17.
-
-- LibMPG123 is updated to the upstream release 1.33.0.
-
-- LibPng is updated to the upstream release 1.6.51.
-
-- LibTiff is updated to the upstream release 4.7.1.
-
-- LibXml2 is updated to the upstream release 2.12.10.
-
-- LibXslt is updated to the upstream release 1.1.43.
-
-[4]: https://gitlab.winehq.org/wine/vkd3d/-/releases/vkd3d-1.18
-
-
-### External dependencies
-
-- The OSMesa library is no longer used. OpenGL bitmap rendering is
-  implemented using EGL instead.
-
-- The HwLoc library is used for CPU detection on FreeBSD.
+### Bugs fixed in 11.15 (total 41):
+
+ - #4811   MSXML3: XMLDOMDocument cannot be queried for IStream interface
+ - #11595  Notepad++ versions prior to 6.9 freeze if native application changes a file it has open when not in a virtual desktop (dogfood)
+ - #20584  Lemmings Revolution - Crash on exit.
+ - #21940  Rise of Legends Demo crashes with null pointer reference in msxml3?
+ - #23319  cmd thinks shift.exe is an internal command
+ - #30239  Multiple Adobe CS6 trial installers fail to initialize, reporting 'Exception caught while getting payloads data combined. Error #1090'
+ - #33984  Nokia Music Player: extraneous transparent gray border in installer window
+ - #35727  Tom Clancy's Rainbow Six: Lockdown Demo wrong players and weapon rendering
+ - #37896  EM_SETPASSWORDCHAR ineffective on multiline edit controls
+ - #43031  popen() hangs when both stdin and stdout are closed
+ - #50109  conhost: write_console beep doesn't produce a beep
+ - #54928  exclamation mark ! in string missing if EnableDelayedExpansion
+ - #55198  QuickBooks SS 2009 installer crash
+ - #55447  wine cannot parse valid javascript
+ - #56399  cmd.exe's %~s modifier (short DOS path) expands to mixed short/long format
+ - #57967  Wrong Z-order in Browse for Folder from MPC-HC 1.7.13
+ - #58112  Unimplemented function KERNEL32.dll.InitializeSynchronizationBarrier
+ - #59073  Washed out colors in OpenGL
+ - #59436  Wayland/EGL: Washed-out colors caused by double sRGB conversion on default framebuffer (GL_FRAMEBUFFER_SRGB)
+ - #59898  Wine on aarch64 fails on linux with CONFIG_ARM64_VA_BITS=39
+ - #59926  CharPrevA/CharPrevExA crash on NULL start pointer (MapleStory 216150 fails to launch)
+ - #59970  monitor_get_dpi will get zero dmPelsWidth/dmPelsHeight in both physical/current cause divide by zero
+ - #59980  Final Fantasy XI Online: Unexpected Right Shift behaviour.
+ - #59986  Mouse misbehaves in Steam
+ - #59998  Multiple applications freeze (Mugen, Touhou 8, Final Burn Neo)
+ - #59999  Application (e. g. WinSCP) freeze after resize its window
+ - #60002  YNAB 4 mouse position incorrect
+ - #60005  Pegasus hangs and crashes
+ - #60012  HOTAS controlls by WinWing are not recognized and even aggresively mapped as some x-box controller.
+ - #60023  Dialogs in some applications are rendered at a quarter of their actual size in Wine 11.13 under certain conditions, e.g. DPI = 144 (IrfanView, WinSCP)
+ - #60036  WMI queries via PS Core do not work with mono.
+ - #60037  Fixed resolution 4:3 fullscreen apps on Wayland have their content offset and present some undefined padding area
+ - #60046  Multiple 32-bit applications including wine builtins (winecfg / regedit / etc.) crash under wine-11.13.
+ - #60051  KakaoTalk intermittently hangs
+ - #60057  gdiplus: GdipCloneBitmapArea drops trailing pixels for 1bpp/4bpp bitmaps with non-byte-aligned width
+ - #60063  shell32: SHBrowseForFolder crashes when an application passes an invalid BROWSEINFO.pidlRoot
+ - #60068  wminet_utils: implement GetErrorInfo()
+ - #60069  WordPerfect 7 installation fails
+ - #60088  ole32/storage: extra trailing NUL byte written into name of stream nested in a substorage (breaks MS Publisher .pub file portability)
+ - #60093  Unable to combine 32 bit arm with i386 emulation on aarch64
+ - #60120  Amnesia: Rebirth crashes after the splash screens
+
+### Changes since 11.14:
+```
+Alex Dujardin (4):
+      windowscodecs: Add 32bppBGRA, 32bppPBGRA -> 64bppPRGBA conversion.
+      windowscodecs: Add 64bppPRGBA -> 128bppRGBAFloat conversion.
+      windowscodecs: Add 64bppPRGBA -> 128bppPRGBAFloat conversion.
+      windowscodecs: Remove incorrectly added bound check.
+
+Alex Henrie (3):
+      kernelbase: Make Char(Next|Prev)A call Char(Next|Prev)ExA.
+      kernelbase: Search backwards in CharPrevExA.
+      user32/tests: Add tests for CharPrev(Ex)A.
+
+Alexandre Julliard (28):
+      wmc: Remove an unused variable.
+      install: Remove an unused variable.
+      server: Pass unicode_str objects by value where possible.
+      server: Add a structure to store object initialization parameters.
+      server: Pass an object parameters structure to create_named_object().
+      server: Pass an object parameters structure to open_named_object().
+      server: Add an init() object operation.
+      server: Implement the init() operation for events.
+      server: Implement the init() operation for mutexes.
+      server: Implement the init() operation for semaphores.
+      server: Implement the init() operation for timers.
+      server: Implement the init() operation for debug objects.
+      server: Implement the init() operation for ALPC ports.
+      server: Implement the init() operation for completion objects.
+      server: Implement the init() operation for directories.
+      server: Implement the init() operation for symlinks.
+      server: Implement the init() operation for mailslots.
+      server: Implement the init() operation for named pipes.
+      server: Implement the init() operation for devices.
+      server: Implement the init() operation for sections.
+      server: Implement the init() operation for registry keys.
+      server: Implement the init() operation for reserve objects.
+      server: Implement the init() operation for job objects.
+      server: Implement the init() operation for window stations and desktops.
+      server: Move the name length check into open_named_object().
+      server: Add a helper to create an object and its handle.
+      symcrypt: Don't enforce any alignment in non-PE builds.
+      ntdll: Redirect to sysarm32 directory on ARM wow64.
+
+Alfred Agrell (3):
+      vidreszr: Register the correct media types.
+      vidreszr: Implement CResizerDMO by piggybacking on CColorConvertDMO.
+      mf: Add tests for video resizer DMO.
+
+Alistair Leslie-Hughes (5):
+      include: Add more defines in wdm.h.
+      include: Add more defines in fltkernel.h.
+      include: Add Flag* defines.
+      include: Add fltuser.h.
+      include: Add fltuserstructures.h.
+
+Allan Vester (2):
+      bcrypt: Add tests for BCRYPT_INITIALIZATION_VECTOR.
+      bcrypt: Support BCRYPT_INITIALIZATION_VECTOR.
+
+Arkadiusz Hiler (1):
+      winebus: Fix initial axis values for evdev gamepads.
+
+Attila Fidan (2):
+      shell32/tests: Test SHBrowseForFolderW() with CSIDL values.
+      shell32: Accept CSIDL values in SHBrowseForFolderW().
+
+Barath Kannan (1):
+      conhost: Add beep functionality to write_console.
+
+Benoît Legat (1):
+      crypt32: Ignore trailing bytes past the outer SEQUENCE in PFXImportCertStore.
+
+Bernhard Übelacker (3):
+      win32u: Fix off-by-one in kbdus_tables.
+      comctl32/tests: Add test of LM_GETIDEALSIZE being more greedy in width.
+      comctl32_v6: Improve LM_GETIDEALSIZE to be more greedy in width.
+
+Billy Laws (1):
+      ntdll: Add RtlWow64SuspendThread semi-stub implementation.
+
+Brendan Shanks (5):
+      dinput/tests: Fix tests that are faulty because of == vs ?: operator precedence.
+      msado15/tests: Fix typos.
+      advapi32/tests: Fix typo.
+      msvcp120/tests: Fix tests that are faulty because of == vs ?: operator precedence.
+      ucrtbase/tests: Fix tests that are faulty because of == vs ?: operator precedence.
+
+Conor McCarthy (1):
+      mfreadwrite: Do not return NEED_MORE_INPUT from source_reader_push_transform_samples().
+
+Dan Fraser (1):
+      dnsapi: Add stubs for the DNS-SD service entry points.
+
+Dean M Greer (1):
+      documentation: Update macOS version.
+
+Elizabeth Figura (11):
+      d3d11/tests: Shrink NV12 test textures a bit.
+      wined3d: Separate a surface_cpu_blt_plane() helper.
+      wined3d: Implement planar CPU blits.
+      d3d11/tests: Test planar CPU blits.
+      wined3d: Separate a wined3d_decoder_vk_prepare_image() helper.
+      wined3d: Separate a wined3d_decoder_vk_create_layered_image() helper.
+      wined3d: Separate a wined3d_decoder_vk_destroy_images() helper.
+      wined3d: Handle dynamic resizing of the H.264 stream.
+      win32u: Make win32u_vkDestroySwapchainKHR() static.
+      win32u: Do not use EXT_external_memory_dma_buf.
+      ntdll: Search for the library containing sa_restorer.
+
+Eric Pouech (3):
+      winedbg: Support larger strings in DebugString.
+      winedbg: Let 'maint module' be a bit more useful.
+      winedbg: Support watch operation larger than 4 bytes.
+
+Esme Povirk (2):
+      winedump: Use the Length from the metadata header.
+      winedump: Handle incremental CLR images.
+
+Etaash Mathamsetty (1):
+      winewayland: Use the visible rect for toplevel rect.
+
+Hans Leidekker (10):
+      bcrypt: Add support for BCRYPT_TLS1_{1,2}_KDF_ALGORITHM.
+      bcrypt: Support retrieving hash block length.
+      bcrypt: TLS1 KDF label is optional.
+      bcrypt: Add support for BCRYPT_HKDF_ALGORITHM.
+      msi: Close the RPC connection on dll unload.
+      secur32: Use bcrypt to hash the certificate in schan_QueryContextAttributesW().
+      winhttp: Support WinHttpQueryOption(WINHTTP_OPTION_SERVER_CBT).
+      winhttp: Stub WinHttpSetOption(WINHTTP_OPTION_ASSURED_NON_BLOCKING_CALLBACKS).
+      winhttp: Stub WinHttpSetOption(WINHTTP_OPTION_ENABLE_HTTP2_PLUS_CLIENT_CERT).
+      crypt32: Use the strong provider in CertCreateSelfSignCertificate().
+
+Henri Verbeet (1):
+      wined3d: Add GPU information for AMD REMBRANDT.
+
+Iliya Andrienko (2):
+      gdiplus: Fix convert_pixels() rounding down bytes.
+      gdiplus: Add sub-byte formats logic to GdipImageRotateFlip.
+
+Jacek Caban (2):
+      winegcc: Always add Clang target options to the compiler command when building ARM64X image.
+      ntdll: Run native-ready .net applications as ARM64EC on ARM64.
+
+Jannis Lübke (3):
+      wined3d: Don't hold wined3d cs mutex when waiting for frame latency.
+      d3dx9/tests: Add tests for D3DXIntersect() and D3DXIntersectSubset().
+      d3dx9: Implement D3DXIntersect() and D3DXIntersectSubset().
+
+Ken Sharp (1):
+      po: Update English resource.
+
+Lokesh Poovaragan (4):
+      jscript: Don't insert implicit semicolon after '.' in member expressions.
+      cmd: Handle caret escape in delayed expansion.
+      cmd/tests: Add tests for %~s short path modifier.
+      cmd: Fix %~s modifier to produce fully short paths.
+
+Louis Lenders (7):
+      wminet_utils: Add NextMethod.
+      wminet_utils: Add EndMethodEnumeration.
+      wminet_utils: Add GetMethod.
+      wminet_utils: Add GetMethodQualifierSet.
+      wminet_utils: Add QualifierSet_Get.
+      wminet_utils: Add GetPropertyQualifierSet.
+      wminet_utils: Add GetErrorInfo.
+
+Maotong Zhang (2):
+      comctl32/tests: Add test for RBBS_VARIABLEHEIGHT band height handling.
+      comctl32: Clamp child height when cyIntegral is zero.
+
+Martin Storsjö (2):
+      include: Use __atomic_exchange_n on Clang.
+      include: Fix building for arm64ec in mingw mode.
+
+Matteo Bruni (3):
+      winex11: Get rid of special handling for right shift in X11DRV_GetKeyNameText().
+      win32u: Don't ignore raw mouse input.
+      d3dx9/tests: Fix a flaky D3DXWeldVertices() test.
+
+Nello De Gregoris (1):
+      ntoskrnl.exe: Add stub for KeGetCurrentIrql().
+
+Nikolay Sivov (20):
+      comdlg32/filedlg: Return current path as is for CDM_GETFILEPATH if it's absolute.
+      ole32/storage: Update name size field on rename.
+      msxml3/tests: Add a test for the document stream.
+      msxml3/tests: Add another stream read test.
+      msxml3: Write out UTF-16 BOM in save().
+      msxml3/tests: Extend a test with multiple writing streams.
+      msxml3/tests: Adjust stream test XML data.
+      msxml3/stylesheet: Improve processor output object management.
+      msxml3/dom: Add IStream support for the document object.
+      msxml3: Remove now unnecessary workaround in save().
+      msxml3: Use ISequentialStream internally for save().
+      msxml3: Explicitly handle ISequentialStream in save().
+      msxml3: Add explicit messages for currently unsupported destination types in save().
+      comdlg32/tests: Add a CDM_SETCONTROLTEXT(edt1) test.
+      comdlg32: For CDM_SETCONTROLTEXT(edt1) always use current file control.
+      msxml3: Handle null destination object in save().
+      msxml3/tests: Add a test for loading from a document.
+      msxml3: Remove workaround when loading from a document in load().
+      include: Add IRequest definition.
+      msxml3: Explicitly check and warn about currently unsupported source types in load().
+
+Paul Gofman (10):
+      winebus: Avoid spurious device recreation in process_inotify_event().
+      kernel32/tests: Add tests for unhandled exception filter with BeingDebugged PEB flag set.
+      kernel32/tests: Add tests for unhandled exception filter under debugger.
+      kernelbase: Query debug port instead of BeingDebugged PEB flag in UnhandledExceptionFilter().
+      crypt32: Avoid adding spurious line separator in encodeBase64[A/W]().
+      crypt32: Fix output string tracing in quote_rdn_value_to_str_w().
+      winhttp: Handle incorrect handle state when querying WINHTTP_OPTION_SERVER_CERT_CHAIN_CONTEXT.
+      winhttp: Use chain established in netconn_verify_cert() for WINHTTP_OPTION_SERVER_CERT_CHAIN_CONTEXT.
+      cmd/tests: Add test for console mode change.
+      cmd: Set console mode in node_execute().
+
+Piotr Caban (23):
+      secur32/tests: Add NTLM QueryCredentialsAttributes(SECPKG_CRED_ATTR_NAMES) tests.
+      msv1_0: Use calloc to allocate credentials handle in ntlm_SpAcquireCredentialsHandle.
+      msv1_0: Add ntlm_SpQueryCredentialsAttributes stub.
+      msv1_0: Add ntlm_SpQueryCredentialsAttributes implementation.
+      msv1_0: Hide password in logs.
+      msv1_0: Remove FLAG_NEGOTIATE_* defines and use NTLMSSP_NEGOTIATE_* instead.
+      ntoskrnl: Implement IoGetRequestorProcessId.
+      msv1_0: Implement in-process NTLM local authentication.
+      msvcr120/tests: Restore exp() tests.
+      ucrtbase: Fix exp(NAN) handling.
+      msv1_0: Don't overwrite output buffer when getting session key.
+      include: Declare SEC_WINNT_AUTH_IDENTITY_EX2.
+      secur32/tests: Add SspiMarshalAuthIdentity tests.
+      secur32/tests: Add SspiUnmarshalAuthIdentity tests.
+      sspicli: Handle more auth identity formats in SspiZeroAuthIdentity.
+      sspicli: Handle more auth identity formats in SspiEncodeAuthIdentityAsStrings.
+      sspicli: Handle more auth identity formats in SspiPrepareForCredWrite.
+      sspicli: Change auth identity format returned by SspiEncodeStringsAsAuthIdentity.
+      sspicli: Use LocalAlloc/LocalFree when allocating auth identity.
+      sspicli: Handle more auth identity formats in SspiFreeAuthIdentity.
+      secur32: Implement SspiMarshalAuthIdentity() and SspiUnmarshalAuthIdentity().
+      secur32: Pass stub LSA_SECPKG_FUNCTION_TABLE to SpInitialize.
+      msv1_0: Get clients process id and thread id using LSA functions table.
+
+Rick Rey (1):
+      winebus.sys: Prefer hidraw for (some) switch 1 controllers.
+
+Rémi Bernon (10):
+      opengl32: Use unsigned handle entry pointer index.
+      opengl32: Add some missing SetLastError on invalid handles.
+      win32u: Use system DPI as monitor DPI for detached sources.
+      user32/tests: Fix monitor DPI awareness tests when system DPI isn't 96.
+      user32/tests: Test window DPI context and monitor DPI in CBT hooks.
+      user32/tests: Check child window DPI awareness and monitor changes.
+      win32u: Lock host window state updates when applying new state.
+      opengl32: Pass NULL object array pointers through.
+      dinput/tests: Fix incorrect GetOverlappedResult test expectation.
+      win32u: Pass initial monitor DPI to the window creation request.
+
+Santino Mazza (3):
+      d2d1/tests: Add some tests for sprite batches.
+      d2d1: Implement sprite batch object methods.
+      cmd: Fix usage of uninitialized variable in node_build_parse.
+
+Thomas Portal (2):
+      dnsapi: Implement DnsServiceConstructInstance() and DnsServiceFreeInstance().
+      dnsapi/tests: Add tests for DnsServiceConstructInstance().
+
+Tobiasz Laskowski (9):
+      jscript: Fix String.replace with multi-digit group.
+      jscript: Fix internal state of RegExp.prototype.
+      jscript/tests: Add tests for RegExp.prototype use.
+      comctl32/tests: Check listbox SETTOPINDEX errors.
+      user32/tests: Check listbox SETTOPINDEX errors.
+      comctl32/listbox: Handle out-of-bounds SETTOPINDEX.
+      user32/listbox: Handle out-of-bounds SETTOPINDEX.
+      jscript: Fix zero-length regex matches.
+      jscript/tests: Add more tests for 0-length regex.
+
+Tomáš Novotný (1):
+      winebus: Enable hidraw by default for Winwing Orion controllers.
+
+Vibhav Pant (4):
+      rometadata: Implement IMetaDataImport::{EnumMembers, EnumMembersWithName}.
+      rometadata: Implement IMetaDataImport::FindMember.
+      rometadata/tests: Add tests for IMetaDataImport::{EnumCustomAttributes, GetCustomAttributeProps}.
+      maintainers: Add entry for WinRT Metadata.
+
+Vlad Zahorodnii (1):
+      winewayland: Add support for wl_fixes.ack_global_remove.
+
+Yuxuan Shui (4):
+      mfplat/tests: Test how the MPEG4 media source handles aspect ratio info.
+      mfreadwrite: Don't modify the `type` parameter in src_reader_SetCurrentMediaType.
+      mfreadwrite/tests: Test how aspect ratios are handled by the reader.
+      mfreadwrite: Ensure output has a 1:1 pixel aspect ratio if processing is enabled.
+
+Zhiyi Zhang (1):
+      winex11.drv: Remove some noisy traces.
+```

@@ -29,7 +29,6 @@
 #include <setjmp.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
@@ -776,9 +775,10 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
         }
         else  /* hack: call builtin handlers registered in the tib list */
         {
-            while (is_valid_frame( (ULONG_PTR)teb_frame ) &&
-                   (ULONG64)teb_frame < new_context.Rsp &&
-                   (ULONG64)teb_frame < (ULONG64)end_frame)
+            ULONG_PTR last_frame = new_context.Rsp;
+            if (end_frame && (ULONG_PTR)end_frame < last_frame) last_frame = (ULONG_PTR)end_frame;
+
+            while (is_valid_frame( (ULONG_PTR)teb_frame ) && (ULONG_PTR)teb_frame < last_frame)
             {
                 TRACE( "calling TEB handler %p (rec=%p, frame=%p context=%p, dispatch=%p)\n",
                        teb_frame->Handler, rec, teb_frame, dispatch.ContextRecord, &dispatch );
@@ -806,7 +806,7 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
                     break;
                 }
             }
-            if ((ULONG64)teb_frame == (ULONG64)end_frame && (ULONG64)end_frame < new_context.Rsp) break;
+            if ((ULONG_PTR)teb_frame == last_frame && last_frame < new_context.Rsp) break;
         }
 
         if (dispatch.EstablisherFrame == (ULONG64)end_frame) break;
@@ -885,6 +885,7 @@ ULONG WINAPI RtlWalkFrameChain( void **buffer, ULONG count, ULONG flags )
     for (i = 0; i < count; i++)
     {
         func = RtlLookupFunctionEntry( context.Rip, &base, &table );
+        if (!func) break;
         if (RtlVirtualUnwind2( UNW_FLAG_NHANDLER, base, context.Rip, func, &context, NULL,
                                &data, &frame, NULL, NULL, NULL, &handler, 0 ))
             break;

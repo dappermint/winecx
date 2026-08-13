@@ -175,6 +175,16 @@ static void test_window_props(void)
     DestroyWindow( hwnd );
 }
 
+static WNDPROC real_class_wndproc;
+
+static LRESULT WINAPI test_real_class_wndproc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    LRESULT lr = 0;
+    if (real_class_wndproc) lr = CallWindowProcW( real_class_wndproc, hwnd, msg, wparam, lparam );
+    if (msg == WM_NCCREATE) lr = 1;
+    return lr;
+}
+
 static void test_class(void)
 {
     struct pinned_atom
@@ -338,14 +348,18 @@ static void test_class(void)
         "NtUserGetClassName returned %lx %lu\n", ret, GetLastError() );
 
     SetPropW( hwnd, L"WineTestProp", (void *)0xdeadbeef );
+    prop = GetPropW( hwnd, L"WineTestProp" );
+    ok( prop == (void *)0xdeadbeef, "GetPropW returned %p\n", prop );
 
     status = NtFindAtom( L"WineTestProp", sizeof(L"WineTestProp") - sizeof(WCHAR), &global );
     ok( !status, "NtFindAtom returned %#lx\n", status );
 
     for (ATOM atom = 0xc000; atom != 0; atom++)
     {
+        name.MaximumLength = sizeof(buf);
         memset( name.Buffer, 0xcc, name.MaximumLength );
         ret = NtUserGetAtomName( atom, &name );
+        ok( ret == 0 || ret == wcslen( buf ), "NtUserGetAtomName %#x returned %lu\n", atom, ret );
         ok( wcscmp( buf, L"WineTestProp" ), "buf = %s\n", debugstr_w(buf) );
     }
 
@@ -358,6 +372,9 @@ static void test_class(void)
     status = NtDeleteAtom( global );
     ok( !status, "NtDeleteAtom returned %#lx\n", status );
 
+    status = NtFindAtom( L"WineTestProp", sizeof(L"WineTestProp") - sizeof(WCHAR), &global );
+    ok( !status, "NtFindAtom returned %#lx\n", status );
+
     cls.lpszClassName = L"WineTestProp";
     class = RegisterClassW( &cls );
     ok( class != 0, "RegisterClassW returned %#x\n", class );
@@ -367,7 +384,33 @@ static void test_class(void)
     ok( ret, "UnregisterClassW failed: %lu\n", GetLastError() );
     cls.lpszClassName = L"test";
 
+    status = NtFindAtom( L"WineTestProp", sizeof(L"WineTestProp") - sizeof(WCHAR), &global );
+    ok( !status, "NtFindAtom returned %#lx\n", status );
+
     RemovePropW( hwnd, L"WineTestProp" );
+
+    status = NtFindAtom( L"WineTestProp", sizeof(L"WineTestProp") - sizeof(WCHAR), &global );
+    ok( status == STATUS_OBJECT_NAME_NOT_FOUND, "NtFindAtom returned %#lx\n", status );
+
+    status = NtQueryInformationAtom( global, AtomBasicInformation, abi, sizeof(abi_buf), NULL );
+    todo_wine ok( status == STATUS_INVALID_HANDLE, "NtQueryInformationAtom returned %#lx\n", status );
+
+    prop = NtUserGetProp( hwnd, MAKEINTRESOURCEW(global) );
+    ok( prop == NULL, "NtUserGetProp returned %p\n", prop );
+    ret = NtUserSetProp( hwnd, MAKEINTRESOURCEW(global), (void *)0xdeadbeef );
+    ok( ret, "NtUserSetProp returned %lu\n", ret );
+    prop = NtUserGetProp( hwnd, MAKEINTRESOURCEW(global) );
+    todo_wine ok( prop == (void *)0xdeadbeef, "NtUserGetProp returned %p\n", prop );
+
+    status = NtQueryInformationAtom( global, AtomBasicInformation, abi, sizeof(abi_buf), NULL );
+    todo_wine ok( status == STATUS_INVALID_HANDLE, "NtQueryInformationAtom returned %#lx\n", status );
+
+    ret = SetPropW( hwnd, MAKEINTRESOURCEW(0xc000), (void *)0xdeadbeef );
+    ok( ret, "SetPropW returned %lu\n", ret );
+    prop = GetPropW( hwnd, MAKEINTRESOURCEW(0xc000) );
+    ok( prop == (void *)0xdeadbeef, "GetPropW returned %p\n", prop );
+    prop = GetPropW( hwnd, MAKEINTRESOURCEW(0xc001) );
+    ok( !prop, "GetPropW returned %p\n", prop );
 
     DestroyWindow( hwnd );
 
@@ -382,6 +425,51 @@ static void test_class(void)
     ok( !ret && GetLastError() == ERROR_INVALID_HANDLE,
         "NtUserGetAtomName returned %lx %lu\n", ret, GetLastError() );
     ok( buf[0] == 0xcccc, "buf = %s\n", debugstr_w(buf) );
+
+
+    memset( &cls, 0, sizeof(cls) );
+    ret = GetClassInfoW( NULL, L"Static", &cls );
+    ok( ret, "GetClassInfoW failed: %lu\n", GetLastError() );
+
+    real_class_wndproc = cls.lpfnWndProc;
+    cls.lpfnWndProc = test_real_class_wndproc;
+    cls.hInstance = GetModuleHandleW( NULL );
+    cls.lpszClassName = L"WineTest Class";
+
+    class = RegisterClassW( &cls );
+    ok( class, "RegisterClassW failed: %lu\n", GetLastError() );
+
+    hwnd = CreateWindowW( cls.lpszClassName, L"test name", WS_OVERLAPPEDWINDOW | WS_HSCROLL | WS_VSCROLL,
+                          CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, 0, 0, NULL, 0 );
+
+    /* Get real class, in this case Static. */
+    memset( buf, 0xcc, sizeof(buf) );
+    name.Buffer = buf;
+    name.Length = 0xdead;
+    name.MaximumLength = sizeof(buf);
+    ret = NtUserGetClassName( hwnd, TRUE, &name );
+    ok( ret == 6, "NtUserGetClassName returned %lu\n", ret );
+    ok( name.Length == 0xdead, "Length = %u\n", name.Length );
+    ok( name.MaximumLength == sizeof(buf), "MaximumLength = %u\n", name.MaximumLength );
+    ok( !wcscmp( buf, L"Static" ), "buf = %s\n", debugstr_w(buf) );
+
+    /* Get normal class instead of real class. */
+    memset( buf, 0xcc, sizeof(buf) );
+    name.Buffer = buf;
+    name.Length = 0xdead;
+    name.MaximumLength = sizeof(buf);
+    ret = NtUserGetClassName( hwnd, FALSE, &name );
+    ok( ret == 14, "NtUserGetClassName returned %lu\n", ret );
+    ok( name.Length == 0xdead, "Length = %u\n", name.Length );
+    ok( name.MaximumLength == sizeof(buf), "MaximumLength = %u\n", name.MaximumLength );
+    ok( !wcscmp( buf, cls.lpszClassName ), "buf = %s\n", debugstr_w(buf) );
+
+    DestroyWindow( hwnd );
+
+    ret = UnregisterClassW( cls.lpszClassName, GetModuleHandleW( NULL ) );
+    ok( ret, "UnregisterClassW failed: %lu\n", GetLastError() );
+    real_class_wndproc = NULL;
+
 
     cls.lpszClassName = L"#1";
     class = RegisterClassW( &cls );
@@ -1853,7 +1941,6 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
     entry_count = pointer_count = 2;
     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
     ok( !ret, "NtUserGetPointerInfoList succeeded\n" );
-    todo_wine
     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
     ok( pointer_count == 2, "got pointer_count %u\n", pointer_count );
     ok( entry_count == 2, "got entry_count %u\n", entry_count );
@@ -1868,7 +1955,6 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
     entry_count = pointer_count = 2;
     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
     ok( !ret, "NtUserGetPointerInfoList succeeded\n" );
-    todo_wine
     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
     ok( pointer_count == 2, "got pointer_count %u\n", pointer_count );
     ok( entry_count == 2, "got entry_count %u\n", entry_count );
@@ -1885,11 +1971,9 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
     memset( pointer_info, 0xcd, sizeof(pointer_info) );
     entry_count = pointer_count = 2;
     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
-    todo_wine_if(mouse_in_pointer_enabled)
     ok( ret == mouse_in_pointer_enabled, "NtUserGetPointerInfoList failed, error %lu\n", GetLastError() );
     if (!ret)
     {
-        todo_wine
         ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
         goto done;
     }
@@ -1996,26 +2080,20 @@ static void test_NtUserEnableMouseInPointer( const char *arg )
     ok( !ret, "NtUserIsMouseInPointerEnabled returned %u, error %lu\n", ret, GetLastError() );
 
     ret = NtUserEnableMouseInPointer( enable );
-    todo_wine
     ok( ret, "NtUserEnableMouseInPointer failed, error %lu\n", GetLastError() );
     ret = NtUserIsMouseInPointerEnabled();
-    todo_wine_if(enable)
     ok( ret == enable, "NtUserIsMouseInPointerEnabled returned %u, error %lu\n", ret, GetLastError() );
 
     SetLastError( 0xdeadbeef );
     ret = NtUserEnableMouseInPointer( !enable );
     ok( !ret, "NtUserEnableMouseInPointer succeeded\n" );
-    todo_wine
     ok( GetLastError() == ERROR_ACCESS_DENIED, "got error %lu\n", GetLastError() );
     ret = NtUserIsMouseInPointerEnabled();
-    todo_wine_if(enable)
     ok( ret == enable, "NtUserIsMouseInPointerEnabled returned %u, error %lu\n", ret, GetLastError() );
 
     ret = NtUserEnableMouseInPointer( enable );
-    todo_wine
     ok( ret, "NtUserEnableMouseInPointer failed, error %lu\n", GetLastError() );
     ret = NtUserIsMouseInPointerEnabled();
-    todo_wine_if(enable)
     ok( ret == enable, "NtUserIsMouseInPointerEnabled returned %u, error %lu\n", ret, GetLastError() );
 
     test_NtUserGetPointerInfoList( enable );
@@ -2922,6 +3000,56 @@ static void test_NtUserRegisterWindowMessage(void)
     ok( !wcscmp( buf, L"#0xabc" ), "buf = %s\n", debugstr_w(buf) );
 }
 
+static BOOL CALLBACK get_virtual_screen_proc( HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM lp )
+{
+    RECT *virtual_rect = (RECT *)lp;
+    UnionRect( virtual_rect, virtual_rect, rect );
+    return TRUE;
+}
+
+static RECT get_virtual_screen_rect(void)
+{
+    RECT rect = {0};
+    EnumDisplayMonitors( 0, NULL, get_virtual_screen_proc, (LPARAM)&rect );
+    return rect;
+}
+
+void test_NtUserGetPointerDeviceRects( const char *arg )
+{
+    RECT screen, himetric_dev = {0}, device = {0}, display = {0};
+    DPI_AWARENESS_CONTEXT ctx = 0;
+    const UINT himetric = 2540;
+    UINT ret, dpi;
+
+    if (!strcmp( arg, "unaware" )) ctx = DPI_AWARENESS_CONTEXT_UNAWARE;
+    else if (!strcmp( arg, "system" )) ctx = DPI_AWARENESS_CONTEXT_SYSTEM_AWARE;
+    else if (!strcmp( arg, "monitor" )) ctx = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE;
+
+    if (ctx)
+    {
+        ret = SetProcessDpiAwarenessContext( ctx );
+        ok( ret, "SetProcessDpiAwarenessContext failed, error %lu.\n", GetLastError() );
+    }
+
+    screen = get_virtual_screen_rect();
+
+    /* operating on unaware scaled values returns wrong values */
+    ctx = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_SYSTEM_AWARE );
+
+    dpi = GetDpiForSystem();
+    himetric_dev.right = GetSystemMetrics( SM_CXVIRTUALSCREEN ) * himetric / dpi;
+    himetric_dev.bottom = GetSystemMetrics( SM_CYVIRTUALSCREEN ) * himetric / dpi;
+
+    SetThreadDpiAwarenessContext( ctx );
+
+    ret = NtUserGetPointerDeviceRects( INVALID_HANDLE_VALUE, &device, &display );
+    ok( ret, "NtUserGetPointerDeviceRects failed, error %lu.\n", GetLastError() );
+    ok( EqualRect( &device, &himetric_dev ), "device %s, expected %s\n",
+        wine_dbgstr_rect( &device ), wine_dbgstr_rect( &himetric_dev ) );
+    ok( EqualRect( &display, &screen ), "display %s, expected %s\n",
+        wine_dbgstr_rect( &display ), wine_dbgstr_rect( &screen ) );
+}
+
 START_TEST(win32u)
 {
     char **argv;
@@ -2951,6 +3079,14 @@ START_TEST(win32u)
         return;
     }
 
+    if (argc > 3 && !strcmp( argv[2], "NtUserGetPointerDeviceRects" ))
+    {
+        winetest_push_context( "dpi context %s", argv[3] );
+        test_NtUserGetPointerDeviceRects( argv[3] );
+        winetest_pop_context();
+        return;
+    }
+
     test_NtUserEnumDisplayDevices();
     test_window_props();
     test_class();
@@ -2976,6 +3112,10 @@ START_TEST(win32u)
 
     run_in_process( argv, "NtUserEnableMouseInPointer 0" );
     run_in_process( argv, "NtUserEnableMouseInPointer 1" );
+
+    run_in_process( argv, "NtUserGetPointerDeviceRects unaware" );
+    run_in_process( argv, "NtUserGetPointerDeviceRects system" );
+    run_in_process( argv, "NtUserGetPointerDeviceRects monitor" );
 
     run_in_process( argv, "NtUserSetProcessDpiAwarenessContext 0x6010" );
     run_in_process( argv, "NtUserSetProcessDpiAwarenessContext 0x11" );

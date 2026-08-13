@@ -134,7 +134,6 @@ static HRESULT DirectSoundDevice_Create(DirectSoundDevice ** ppDevice)
         return DSERR_OUTOFMEMORY;
     }
 
-    device->ref            = 1;
     device->priolevel      = DSSCL_NORMAL;
     device->stopped        = 1;
     device->speaker_config = DSSPEAKER_COMBINED(DSSPEAKER_STEREO, DSSPEAKER_GEOMETRY_WIDE);
@@ -187,21 +186,14 @@ static HRESULT DirectSoundDevice_Create(DirectSoundDevice ** ppDevice)
     return DS_OK;
 }
 
-static ULONG DirectSoundDevice_AddRef(DirectSoundDevice * device)
-{
-    ULONG ref = InterlockedIncrement(&(device->ref));
-    TRACE("(%p) ref %ld\n", device, ref);
-    return ref;
-}
-
-static ULONG DirectSoundDevice_Release(DirectSoundDevice * device)
+static void DirectSoundDevice_destroy(DirectSoundDevice *device)
 {
     HRESULT hr;
-    ULONG ref = InterlockedDecrement(&(device->ref));
-    TRACE("(%p) ref %ld\n", device, ref);
-    if (!ref) {
         int i;
 
+        TRACE("(%p)\n", device);
+
+        InterlockedExchange(&device->terminated, TRUE);
         SetEvent(device->sleepev);
         if (device->thread) {
             WaitForSingleObject(device->thread, INFINITE);
@@ -209,10 +201,6 @@ static ULONG DirectSoundDevice_Release(DirectSoundDevice * device)
         }
         if (device->mta_cookie)
             CoDecrementMTAUsage(device->mta_cookie);
-
-        EnterCriticalSection(&DSOUND_renderers_lock);
-        list_remove(&device->entry);
-        LeaveCriticalSection(&DSOUND_renderers_lock);
 
         /* It is allowed to release this object even when buffers are playing */
         if (device->buffers) {
@@ -243,8 +231,6 @@ static ULONG DirectSoundDevice_Release(DirectSoundDevice * device)
         DeleteCriticalSection(&device->mixlock);
         TRACE("(%p) released\n", device);
         free(device);
-    }
-    return ref;
 }
 
 static HRESULT DirectSoundDevice_Initialize(DirectSoundDevice ** ppDevice, LPCGUID lpcGUID)
@@ -279,23 +265,10 @@ static HRESULT DirectSoundDevice_Initialize(DirectSoundDevice ** ppDevice, LPCGU
     if(FAILED(hr))
         return hr;
 
-    EnterCriticalSection(&DSOUND_renderers_lock);
-
-    LIST_FOR_EACH_ENTRY(device, &DSOUND_renderers, DirectSoundDevice, entry){
-        if(IsEqualGUID(&device->guid, &devGUID)){
-            IMMDevice_Release(mmdevice);
-            DirectSoundDevice_AddRef(device);
-            *ppDevice = device;
-            LeaveCriticalSection(&DSOUND_renderers_lock);
-            return DS_OK;
-        }
-    }
-
     hr = DirectSoundDevice_Create(&device);
     if(FAILED(hr)){
         WARN("DirectSoundDevice_Create failed\n");
         IMMDevice_Release(mmdevice);
-        LeaveCriticalSection(&DSOUND_renderers_lock);
         return hr;
     }
 
@@ -308,7 +281,6 @@ static HRESULT DirectSoundDevice_Initialize(DirectSoundDevice ** ppDevice, LPCGU
     if (FAILED(hr))
     {
         free(device);
-        LeaveCriticalSection(&DSOUND_renderers_lock);
         IMMDevice_Release(mmdevice);
         WARN("DSOUND_ReopenDevice failed: %08lx\n", hr);
         return hr;
@@ -345,9 +317,6 @@ static HRESULT DirectSoundDevice_Initialize(DirectSoundDevice ** ppDevice, LPCGU
     SetThreadPriority(device->thread, THREAD_PRIORITY_TIME_CRITICAL);
 
     *ppDevice = device;
-    list_add_tail(&DSOUND_renderers, &device->entry);
-
-    LeaveCriticalSection(&DSOUND_renderers_lock);
 
     return hr;
 }
@@ -628,7 +597,7 @@ void DirectSoundDevice_RemoveBuffer(DirectSoundDevice * device, IDirectSoundBuff
 static void directsound_destroy(IDirectSoundImpl *This)
 {
     if (This->device)
-        DirectSoundDevice_Release(This->device);
+        DirectSoundDevice_destroy(This->device);
     TRACE("(%p) released\n", This);
     free(This);
 }
@@ -1148,6 +1117,48 @@ void DSOUND_ParseSpeakerConfig(DirectSoundDevice *device)
             device->speaker_num[4] = 5; /* Rear right */
             device->speaker_num[5] = 3; /* LFE */
             device->num_speakers = 6;
+            device->lfe_channel = 3;
+        break;
+
+        case DSSPEAKER_7POINT1_WIDE:
+            device->speaker_angles[0] = M_PI/180.0f * -135.0f;
+            device->speaker_angles[1] = M_PI/180.0f *  -45.0f;
+            device->speaker_angles[2] = M_PI/180.0f *    0.0f;
+            device->speaker_angles[3] = M_PI/180.0f *   45.0f;
+            device->speaker_angles[4] = M_PI/180.0f *  135.0f;
+            device->speaker_angles[5] = M_PI/180.0f *  -10.0f;
+            device->speaker_angles[6] = M_PI/180.0f *   10.0f;
+            device->speaker_angles[7] = 9999.0f;
+            device->speaker_num[0] = 4; /* Rear left */
+            device->speaker_num[1] = 0; /* Front left */
+            device->speaker_num[2] = 2; /* Front centre */
+            device->speaker_num[3] = 1; /* Front right */
+            device->speaker_num[4] = 5; /* Rear right */
+            device->speaker_num[5] = 6; /* Front left of center */
+            device->speaker_num[6] = 7; /* Front right of center */
+            device->speaker_num[7] = 3; /* LFE */
+            device->num_speakers = 8;
+            device->lfe_channel = 3;
+        break;
+
+        case DSSPEAKER_7POINT1_SURROUND:
+            device->speaker_angles[0] = M_PI/180.0f * -135.0f;
+            device->speaker_angles[1] = M_PI/180.0f *  -45.0f;
+            device->speaker_angles[2] = M_PI/180.0f *    0.0f;
+            device->speaker_angles[3] = M_PI/180.0f *   45.0f;
+            device->speaker_angles[4] = M_PI/180.0f *  135.0f;
+            device->speaker_angles[5] = M_PI/180.0f *  -90.0f;
+            device->speaker_angles[6] = M_PI/180.0f *   90.0f;
+            device->speaker_angles[7] = 9999.0f;
+            device->speaker_num[0] = 4; /* Rear left */
+            device->speaker_num[1] = 0; /* Front left */
+            device->speaker_num[2] = 2; /* Front centre */
+            device->speaker_num[3] = 1; /* Front right */
+            device->speaker_num[4] = 5; /* Rear right */
+            device->speaker_num[5] = 6; /* Side left */
+            device->speaker_num[6] = 7; /* Side right */
+            device->speaker_num[7] = 3; /* LFE */
+            device->num_speakers = 8;
             device->lfe_channel = 3;
         break;
 

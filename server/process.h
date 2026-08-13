@@ -50,9 +50,11 @@ struct process
     struct timeout_user *sigkill_timeout; /* timeout for final SIGKILL */
     timeout_t            sigkill_delay;   /* delay before final SIGKILL */
     unsigned short       machine;         /* client machine type */
+    unsigned int         page_size;       /* client page size */
     int                  unix_pid;        /* Unix pid for final SIGKILL */
     int                  exit_code;       /* process exit code */
     int                  running_threads; /* number of threads running in this process */
+    int                  user_threads;    /* number of user threads running in this process */
     timeout_t            start_time;      /* absolute time at process start */
     timeout_t            end_time;        /* absolute time at process end */
     affinity_t           affinity;        /* process affinity mask */
@@ -63,7 +65,6 @@ struct process
     unsigned int         is_system:1;     /* is it a system process? */
     unsigned int         debug_children:1;/* also debug all child processes */
     unsigned int         is_terminating:1;/* is process terminating? */
-    unsigned int         set_foreground:1;/* has process called set_foreground_window */
     data_size_t          imagelen;        /* length of image path in bytes */
     WCHAR               *image;           /* main exe image full path */
     struct job          *job;             /* job object associated with this process */

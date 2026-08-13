@@ -24,7 +24,6 @@
 #include <stdlib.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winnt.h"
 #include "winioctl.h"
@@ -128,6 +127,7 @@ static const char * const reason_names[] =
 struct file_id
 {
     BYTE ObjectId[16];
+    BYTE BirthVolumeId[16];
 };
 
 #define HASH_MAP_SIZE 32
@@ -2106,26 +2106,41 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
 static void set_security_cookie( ULONG_PTR *cookie )
 {
     static ULONG seed;
+    ULONG_PTR new_cookie;
+    SIZE_T size;
+    void *addr;
+    ULONG old_prot;
 
     TRACE( "initializing security cookie %p\n", cookie );
 
     if (!seed) seed = NtGetTickCount() ^ GetCurrentProcessId();
+    new_cookie = *cookie;
     for (;;)
     {
-        if (*cookie == DEFAULT_SECURITY_COOKIE_16)
-            *cookie = RtlRandom( &seed ) >> 16; /* leave the high word clear */
-        else if (*cookie == DEFAULT_SECURITY_COOKIE_32)
-            *cookie = RtlRandom( &seed );
+        if (new_cookie == DEFAULT_SECURITY_COOKIE_16)
+            new_cookie = RtlRandom( &seed ) >> 16; /* leave the high word clear */
+        else if (new_cookie == DEFAULT_SECURITY_COOKIE_32)
+            new_cookie = RtlRandom( &seed );
 #ifdef DEFAULT_SECURITY_COOKIE_64
-        else if (*cookie == DEFAULT_SECURITY_COOKIE_64)
+        else if (new_cookie == DEFAULT_SECURITY_COOKIE_64)
         {
-            *cookie = RtlRandom( &seed );
+            new_cookie = RtlRandom( &seed );
             /* fill up, but keep the highest word clear */
-            *cookie ^= (ULONG_PTR)RtlRandom( &seed ) << 16;
+            new_cookie ^= (ULONG_PTR)RtlRandom( &seed ) << 16;
         }
 #endif
         else
             break;
+    }
+
+    if (new_cookie == *cookie) return;  /* already initialized */
+
+    addr = cookie;
+    size = sizeof(*cookie);
+    if (!NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
+    {
+        *cookie = new_cookie;
+        NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old_prot, &old_prot );
     }
 }
 
@@ -2283,7 +2298,7 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
 
     /* fixup imports */
 
-    if (!(flags & DONT_RESOLVE_DLL_REFERENCES) &&
+    if (!(flags & LDR_DONT_RESOLVE_REFS) &&
         ((nt->FileHeader.Characteristics & IMAGE_FILE_DLL) ||
          nt->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_NATIVE))
     {
@@ -2709,7 +2724,8 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDL
 
     if (!NtFsControlFile( handle, 0, NULL, NULL, &io, FSCTL_GET_OBJECT_ID, NULL, 0, &fid, sizeof(fid) ))
     {
-        memcpy( id, fid.ObjectId, sizeof(*id) );
+        memcpy( id->ObjectId, fid.ObjectId, sizeof(id->ObjectId) );
+        memcpy( id->BirthVolumeId, fid.BirthVolumeId, sizeof(id->BirthVolumeId) );
         if ((*pwm = find_fileid_module( id )))
         {
             TRACE( "%s is the same file as existing module %p %s\n", debugstr_w( nt_name->Buffer ),
@@ -2900,7 +2916,7 @@ static WINE_MODREF *build_main_module(void)
 #endif
     status = RtlDosPathNameToNtPathName_U_WithStatus( params->ImagePathName.Buffer, &nt_name, NULL, NULL );
     if (status) goto failed;
-    status = build_module( NULL, &nt_name, &module, &info, NULL, DONT_RESOLVE_DLL_REFERENCES, FALSE,
+    status = build_module( NULL, &nt_name, &module, &info, NULL, LDR_DONT_RESOLVE_REFS, FALSE,
                            FALSE, &wm );
     if (status) goto failed;
     RtlFreeUnicodeString( &nt_name );
@@ -3440,12 +3456,25 @@ NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int
 /******************************************************************
  *		LdrLoadDll (NTDLL.@)
  */
-NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
+NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_flags,
                                              const UNICODE_STRING *libname, HMODULE* hModule)
 {
+    const ULONG load_library_search_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS
+                | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
     WINE_MODREF *wm;
     NTSTATUS nts;
+    ULONG flags = 0;
     WCHAR *dllname = append_dll_ext( libname->Buffer );
+    WCHAR *path_name = NULL, *dummy;
+
+    if (load_flags) flags = *load_flags;
+    if (!search_path || ((ULONG_PTR)search_path & 1))
+    {
+        if ((nts = LdrGetDllPath( libname->Buffer, (ULONG_PTR)search_path & load_library_search_flags, &path_name, &dummy )))
+            return nts;
+    }
+    else path_name = (WCHAR *)search_path;
 
     RtlEnterCriticalSection( &loader_section );
 
@@ -3460,10 +3489,11 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
             wm = NULL;
         }
     }
-    *hModule = (wm) ? wm->ldr.DllBase : NULL;
+    if (wm) *hModule = wm->ldr.DllBase;
 
     RtlLeaveCriticalSection( &loader_section );
     RtlFreeHeap( GetProcessHeap(), 0, dllname );
+    if (path_name != search_path) RtlReleasePath( path_name );
     return nts;
 }
 
@@ -4713,7 +4743,7 @@ NTSTATUS WINAPI LdrAddDllDirectory( const UNICODE_STRING *dir, void **cookie )
     struct dll_dir_entry *ptr;
     RTL_PATH_TYPE type = RtlDetermineDosPathNameType_U( dir->Buffer );
 
-    if (type != RtlPathTypeRooted && type != RtlPathTypeDriveAbsolute && type != RtlPathTypeUncAbsolute)
+    if (type != RtlPathTypeRooted && type != RtlPathTypeDriveAbsolute && type != RtlPathTypeUncAbsolute && type != RtlPathTypeLocalDevice)
         return STATUS_INVALID_PARAMETER;
 
     status = RtlDosPathNameToNtPathName_U_WithStatus( dir->Buffer, &nt_name, NULL, NULL );
