@@ -1724,8 +1724,7 @@ size_t server_init_process(void)
         if (supported_machines_count > 2 &&
             supported_machines[supported_machines_count - 1] == supported_machines[supported_machines_count - 2])
         {
-            fprintf( stderr, "Using a 32-bit prefix in Wow64 mode (%s) pid %x. tid %x\n", config_dir,
-                     (unsigned int)pid, (unsigned int)tid );
+            fprintf( stderr, "Using a 32-bit prefix in Wow64 mode (%s)\n", config_dir );
             supported_machines_count--;
             wow64_using_32bit_prefix = TRUE;
         }
