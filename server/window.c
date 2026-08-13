@@ -2270,36 +2270,6 @@ DECL_HANDLER(create_window)
     reply->class_ptr   = get_class_client_ptr( win->class );
 }
 
-static BOOL in_private_data_range( const struct window *win, int offset, int size )
-{
-    return offset < win->private_off + win->private_len && offset + size >= win->private_off;
-}
-
-
-/* Set the window builtin class FNID */
-DECL_HANDLER(set_window_fnid)
-{
-    data_size_t extra_size, private_size;
-    struct obj_locator class_locator;
-    struct window_class *class;
-    struct window *win;
-    unsigned int fnid;
-
-    if (!(win = get_window( req->handle ))) return;
-    if (is_desktop_window( win ) && win->thread != current) return set_error( STATUS_ACCESS_DENIED );
-
-    if (!(class = grab_class( current->process, req->atom, 0, &class_locator ))) return;
-    fnid = get_class_fnid( class, &extra_size, &private_size );
-
-    if (win->shared->fnid && win->shared->fnid != fnid) set_error( STATUS_INVALID_PARAMETER );
-    else SHARED_WRITE_BEGIN( win->shared, window_shm_t )
-    {
-        shared->fnid            = fnid;
-        shared->private_size    = private_size;
-    }
-    SHARED_WRITE_END;
-    release_class( class );
-}
 
 
 /* set the parent of a window */
@@ -3305,4 +3275,30 @@ DECL_HANDLER(set_window_layered_info)
         if (!was_layered) redraw_window( win, 0, RDW_ALLCHILDREN | RDW_INVALIDATE | RDW_ERASE | RDW_FRAME, 0 );
     }
     else set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
+}
+
+
+/* Set the window builtin class FNID */
+DECL_HANDLER(set_window_fnid)
+{
+    data_size_t extra_size, private_size;
+    struct obj_locator class_locator;
+    struct window_class *class;
+    struct window *win;
+    unsigned int fnid;
+
+    if (!(win = get_window( req->handle ))) return;
+    if (is_desktop_window( win ) && win->thread != current) return set_error( STATUS_ACCESS_DENIED );
+
+    if (!(class = grab_class( current->process, req->atom, 0, &class_locator ))) return;
+    fnid = get_class_fnid( class, &extra_size, &private_size );
+
+    if (win->shared->fnid && win->shared->fnid != fnid) set_error( STATUS_INVALID_PARAMETER );
+    else SHARED_WRITE_BEGIN( win->shared, window_shm_t )
+    {
+        shared->fnid            = fnid;
+        shared->private_size    = private_size;
+    }
+    SHARED_WRITE_END;
+    release_class( class );
 }
