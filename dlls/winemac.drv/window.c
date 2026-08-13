@@ -1170,6 +1170,23 @@ static void macdrv_client_surface_detach(struct client_surface *client)
     }
 }
 
+/* Client rect of hwnd, and of its top level, both in the top level's client
+ * coordinates.  This is the space a hosted layer tree lives in. */
+static BOOL get_hosted_rects(HWND hwnd, HWND toplevel, RECT *container, RECT *frame)
+{
+    UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
+
+    if (!NtUserGetClientRect(toplevel, container, NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI)))
+        return FALSE;
+    if (!NtUserGetClientRect(hwnd, frame, dpi)) return FALSE;
+    if (hwnd != toplevel) NtUserMapWindowPoints(hwnd, toplevel, (POINT *)frame, 2, dpi);
+
+    /* the window can still be unsized when a client first asks for a surface,
+     * and a zero-sized drawable has no area to render into */
+    if (IsRectEmpty(frame)) *frame = *container;
+    return !IsRectEmpty(container);
+}
+
 static void macdrv_client_surface_update(struct client_surface *client)
 {
     struct macdrv_client_surface *surface = impl_from_client_surface(client);
@@ -1242,23 +1259,6 @@ struct client_surface *macdrv_CreateClientSurface(HWND hwnd, int pixel_format)
     }
 
     return &surface->client;
-}
-
-/* Client rect of hwnd, and of its top level, both in the top level's client
- * coordinates.  This is the space a hosted layer tree lives in. */
-static BOOL get_hosted_rects(HWND hwnd, HWND toplevel, RECT *container, RECT *frame)
-{
-    UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
-
-    if (!NtUserGetClientRect(toplevel, container, NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI)))
-        return FALSE;
-    if (!NtUserGetClientRect(hwnd, frame, dpi)) return FALSE;
-    if (hwnd != toplevel) NtUserMapWindowPoints(hwnd, toplevel, (POINT *)frame, 2, dpi);
-
-    /* the window can still be unsized when a client first asks for a surface,
-     * and a zero-sized drawable has no area to render into */
-    if (IsRectEmpty(frame)) *frame = *container;
-    return !IsRectEmpty(container);
 }
 
 /* Depth-first, front-to-back walk of the descendants: GW_CHILD is the top of
