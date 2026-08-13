@@ -229,6 +229,8 @@ static void stub_syscall( const char *name )
 #define SYSCALL_STUB(name) static void name(void) { stub_syscall( #name ); }
 ALL_SYSCALL_STUBS
 
+extern typeof(NtReadFile) __wine_rpc_NtReadFile;
+
 static void * const syscalls[] =
 {
 #define SYSCALL_ENTRY(id,name,args) name,
@@ -242,8 +244,6 @@ static BYTE syscall_args[ARRAY_SIZE(syscalls)] =
     ALL_SYSCALLS
 #undef SYSCALL_ENTRY
 };
-
-extern typeof(NtReadFile) __wine_rpc_NtReadFile;
 
 /* CW Hack 24067: d3dmetal resolves the syscall table from ntdll.so by name */
 __attribute__((visibility("default")))
