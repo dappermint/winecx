@@ -44,19 +44,23 @@ static NTSTATUS  (WINAPI *pNtGetContextThread)(HANDLE,CONTEXT*);
 static NTSTATUS  (WINAPI *pNtSetContextThread)(HANDLE,CONTEXT*);
 static NTSTATUS  (WINAPI *pNtQueueApcThread)(HANDLE handle, PNTAPCFUNC func,
         ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
-static NTSTATUS  (WINAPI *pNtQueueApcThreadEx)(HANDLE handle, HANDLE reserve_handle, PNTAPCFUNC func,
-        ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
-static NTSTATUS  (WINAPI *pNtQueueApcThreadEx2)(HANDLE handle, HANDLE reserve_handle, ULONG flags, PNTAPCFUNC func,
-        ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
-static NTSTATUS  (WINAPI *pNtContinueEx)(CONTEXT*,KCONTINUE_ARGUMENT*);
 static NTSTATUS  (WINAPI *pRtlRaiseException)(EXCEPTION_RECORD *rec);
-static PVOID     (WINAPI *pRtlUnwind)(PVOID, PVOID, PEXCEPTION_RECORD, PVOID);
 static VOID      (WINAPI *pRtlCaptureContext)(CONTEXT*);
 static PVOID     (WINAPI *pRtlAddVectoredExceptionHandler)(ULONG first, PVECTORED_EXCEPTION_HANDLER func);
 static ULONG     (WINAPI *pRtlRemoveVectoredExceptionHandler)(PVOID handler);
 static PVOID     (WINAPI *pRtlAddVectoredContinueHandler)(ULONG first, PVECTORED_EXCEPTION_HANDLER func);
 static ULONG     (WINAPI *pRtlRemoveVectoredContinueHandler)(PVOID handler);
-static void      (WINAPI *pRtlSetUnhandledExceptionFilter)(PRTL_EXCEPTION_FILTER filter);
+static void *    (WINAPI *pRtlPcToFileHeader)(PVOID pc, PVOID *address);
+static void      (WINAPI *pRtlGetCallersAddress)(void**,void**);
+static NTSTATUS  (WINAPI *pNtReadVirtualMemory)(HANDLE, const void*, void*, SIZE_T, SIZE_T*);
+static NTSTATUS  (WINAPI *pNtTerminateProcess)(HANDLE handle, LONG exit_code);
+static NTSTATUS  (WINAPI *pNtQueryInformationThread)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
+static BOOL      (WINAPI *pIsWow64Process)(HANDLE, PBOOL);
+static NTSTATUS  (WINAPI *pNtClose)(HANDLE);
+static NTSTATUS  (WINAPI *pNtSuspendProcess)(HANDLE process);
+static NTSTATUS  (WINAPI *pNtResumeProcess)(HANDLE process);
+static BOOL      (WINAPI *pWaitForDebugEventEx)(DEBUG_EVENT *, DWORD);
+#if defined(__x86_64__) || defined(__i386__)
 static ULONG64   (WINAPI *pRtlGetEnabledExtendedFeatures)(ULONG64);
 static NTSTATUS  (WINAPI *pRtlGetExtendedContextLength)(ULONG context_flags, ULONG *length);
 static NTSTATUS  (WINAPI *pRtlGetExtendedContextLength2)(ULONG context_flags, ULONG *length, ULONG64 compaction_mask);
@@ -69,17 +73,8 @@ static void *    (WINAPI *pRtlLocateExtendedFeature)(CONTEXT_EX *context_ex, ULO
 static void *    (WINAPI *pRtlLocateLegacyContext)(CONTEXT_EX *context_ex, ULONG *length);
 static void      (WINAPI *pRtlSetExtendedFeaturesMask)(CONTEXT_EX *context_ex, ULONG64 feature_mask);
 static ULONG64   (WINAPI *pRtlGetExtendedFeaturesMask)(CONTEXT_EX *context_ex);
-static void *    (WINAPI *pRtlPcToFileHeader)(PVOID pc, PVOID *address);
-static void      (WINAPI *pRtlGetCallersAddress)(void**,void**);
-static NTSTATUS  (WINAPI *pNtRaiseException)(EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_chance);
-static NTSTATUS  (WINAPI *pNtReadVirtualMemory)(HANDLE, const void*, void*, SIZE_T, SIZE_T*);
-static NTSTATUS  (WINAPI *pNtTerminateProcess)(HANDLE handle, LONG exit_code);
-static NTSTATUS  (WINAPI *pNtQueryInformationThread)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
 static NTSTATUS  (WINAPI *pNtSetInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG);
-static BOOL      (WINAPI *pIsWow64Process)(HANDLE, PBOOL);
-static NTSTATUS  (WINAPI *pNtClose)(HANDLE);
-static NTSTATUS  (WINAPI *pNtSuspendProcess)(HANDLE process);
-static NTSTATUS  (WINAPI *pNtResumeProcess)(HANDLE process);
+static PVOID     (WINAPI *pRtlUnwind)(PVOID, PVOID, PEXCEPTION_RECORD, PVOID);
 static BOOL      (WINAPI *pInitializeContext)(void *buffer, DWORD context_flags, CONTEXT **context,
         DWORD *length);
 static BOOL      (WINAPI *pInitializeContext2)(void *buffer, DWORD context_flags, CONTEXT **context,
@@ -87,13 +82,24 @@ static BOOL      (WINAPI *pInitializeContext2)(void *buffer, DWORD context_flags
 static void *    (WINAPI *pLocateXStateFeature)(CONTEXT *context, DWORD feature_id, DWORD *length);
 static BOOL      (WINAPI *pSetXStateFeaturesMask)(CONTEXT *context, DWORD64 feature_mask);
 static BOOL      (WINAPI *pGetXStateFeaturesMask)(CONTEXT *context, DWORD64 *feature_mask);
-static BOOL      (WINAPI *pWaitForDebugEventEx)(DEBUG_EVENT *, DWORD);
+#endif
 #ifndef __i386__
 static VOID      (WINAPI *pRtlUnwindEx)(VOID*, VOID*, EXCEPTION_RECORD*, VOID*, CONTEXT*, UNWIND_HISTORY_TABLE*);
 static BOOLEAN   (CDECL  *pRtlAddFunctionTable)(RUNTIME_FUNCTION*, DWORD, DWORD64);
 static BOOLEAN   (CDECL  *pRtlDeleteFunctionTable)(RUNTIME_FUNCTION*);
 static VOID      (CDECL  *pRtlRestoreContext)(CONTEXT*, EXCEPTION_RECORD*);
+static void      (WINAPI *pRtlSetUnhandledExceptionFilter)(PRTL_EXCEPTION_FILTER filter);
+#endif
+#ifdef __x86_64__
+static NTSTATUS  (WINAPI *pNtQueueApcThreadEx)(HANDLE handle, HANDLE reserve_handle, PNTAPCFUNC func,
+        ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
+static NTSTATUS  (WINAPI *pNtQueueApcThreadEx2)(HANDLE handle, HANDLE reserve_handle, ULONG flags, PNTAPCFUNC func,
+        ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
+static NTSTATUS  (WINAPI *pNtRaiseException)(EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_chance);
 static NTSTATUS  (WINAPI *pRtlGetNativeSystemInformation)(SYSTEM_INFORMATION_CLASS,void*,ULONG,ULONG*);
+#endif
+#if defined(__x86_64__) || defined(__aarch64__)
+static NTSTATUS  (WINAPI *pNtContinueEx)(CONTEXT*,KCONTINUE_ARGUMENT*);
 #endif
 
 static void *pKiUserApcDispatcher;
@@ -180,9 +186,11 @@ static char**   my_argv;
 static BOOL     is_wow64;
 static BOOL old_wow64;  /* Wine old-style wow64 */
 static UINT apc_count;
-static BOOL have_vectored_api;
 static enum debugger_stages test_stage;
 static QUEUE_USER_APC_FLAGS apc_flags;
+#if defined(__x86_64__) || defined(__i386__)
+static BOOL have_vectored_api;
+#endif
 
 static void CALLBACK apc_func( ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3 )
 {
@@ -6237,7 +6245,6 @@ static void test_direct_syscalls(void)
     func = code_mem;
     func(find_syscall_nr("NtSetEvent"), event, NULL);
 
-    todo_wine
     ok(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Event not signaled.\n");
     CloseHandle(event);
 }
@@ -6386,6 +6393,231 @@ static void test_base_init_thunk_unwind(void)
     CloseHandle( thread );
     ok( bret, "got error %lu.\n", GetLastError() );
     ok( count == 2, "got count %lu.\n", count );
+}
+
+static void WINAPI test_backtrace_without_runtime_function_func( BOOL todo )
+{
+    unsigned int count;
+    void *addrs[256];
+
+    memset( addrs, 0xcc, sizeof(addrs) );
+    count = RtlCaptureStackBackTrace( 0, 256, addrs, NULL );
+    todo_wine_if(todo) ok( count == 2, "got %d.\n", count );
+    ok( (char *)addrs[1] == (char *)code_mem + 22, "got %p, code_mem %p.\n", addrs[1], code_mem );
+    todo_wine_if(todo) ok( addrs[2] == (void *)0xcccccccccccccccc, "got %p.\n", addrs[2]);
+
+    memset( addrs, 0xcc, sizeof(addrs) );
+    count = RtlWalkFrameChain( addrs, 256, 0 );
+    todo_wine_if(todo) ok( count == 2, "got %d.\n", count );
+    ok( (char *)addrs[1] == (char *)code_mem + 22, "got %p, code_mem %p.\n", addrs[1], code_mem );
+    todo_wine_if(todo) ok( addrs[2] == (void *)0xcccccccccccccccc, "got %p.\n", addrs[2]);
+}
+
+static RUNTIME_FUNCTION * CALLBACK test_backtrace_without_runtime_function_callback( DWORD_PTR pc, void *context )
+{
+    ++*(unsigned int *)context;
+    return NULL;
+}
+
+static void test_backtrace_without_runtime_function(void)
+{
+    static const BYTE unwind_info[] =
+    {
+        1,                       /* version + flags */
+        0,                       /* prolog size */
+        0,                       /* opcode count */
+        0,                       /* frame reg */
+        0x00, 0x00, 0x00, 0x00,  /* handler */
+    };
+
+    static BYTE test_code[] =
+    {
+        0xb8, 0xef, 0xbe, 0xad, 0xde,               /* mov    $0xdeadbeef,%eax */
+        0x50,                                       /* pushq *rax */
+        0x50,                                       /* pushq *rax */
+        0x50,                                       /* pushq *rax */
+        0x50,                                       /* pushq *rax */
+        0x50,                                       /* pushq *rax */
+        /* test_backtrace_function offset 12  */
+        0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,         /* movabs test_backtrace_without_runtime_function_func, %rax */
+        0xff, 0xd0,                                 /* callq *%rax */
+        /* offset 22 */
+        0x48, 0x83, 0xc4, 0x28,                     /* addq $0x28,%rsp */
+        0xc3,                                       /* ret */
+    };
+    IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY rt_func;
+    void (WINAPI *func)( BOOL todo ) = code_mem;
+    ULONG_PTR table;
+    unsigned int count;
+    BOOL ret;
+
+    *(void **)((char *)test_code + 12) = test_backtrace_without_runtime_function_func;
+    memcpy( code_mem, test_code, sizeof(test_code) );
+    func = code_mem;
+
+    func( FALSE );
+
+    memcpy( (char *)code_mem + 0x1000, unwind_info, sizeof(unwind_info) );
+    rt_func.BeginAddress = 0;
+    rt_func.EndAddress = sizeof(test_code);
+    rt_func.UnwindData = 0x1000;
+    ret = RtlAddFunctionTable( &rt_func, 1, (ULONG_PTR)code_mem );
+    ok(ret, "RtlAddFunctionTable failed.\n");
+
+    func( TRUE );
+
+    ret = RtlDeleteFunctionTable( &rt_func );
+    ok( ret, "RtlDeleteFunctionTable failed.\n" );
+
+    table = (ULONG_PTR)code_mem | 0x3;
+    count = 0;
+    ret = RtlInstallFunctionTableCallback( table, (ULONG_PTR)code_mem, 2048,
+                                           &test_backtrace_without_runtime_function_callback, (PVOID*)&count, NULL );
+    ok( ret, "RtlInstallFunctionTableCallback failed.\n" );
+    func( FALSE );
+    todo_wine ok( !count, "got %d.\n", count );
+    ret = pRtlDeleteFunctionTable( (PRUNTIME_FUNCTION)table );
+    ok( ret, "RtlDeleteFunctionTable failed.\n" );
+}
+
+static DWORD WINAPI test_set_context_mxcsr_thread_proc( void *dummy )
+{
+    return 0;
+}
+
+static int set_context_mxcsr_test_ctx_flags;
+
+static LONG WINAPI test_set_context_mxcsr_handler(struct _EXCEPTION_POINTERS *e)
+{
+    EXCEPTION_RECORD *rec = e->ExceptionRecord;
+    CONTEXT *ctx = e->ContextRecord;
+
+    ok( rec->ExceptionCode == 0x80000003, "got %#lx.\n", rec->ExceptionCode );
+    ++ctx->Rip;
+
+    ctx->MxCsr = 0x1f81;
+    ctx->FltSave.MxCsr = 0x1f82;
+    if (set_context_mxcsr_test_ctx_flags) ctx->ContextFlags = set_context_mxcsr_test_ctx_flags;
+    else                                  set_context_mxcsr_test_ctx_flags = ctx->ContextFlags;
+
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static void test_set_context_mxcsr(void)
+{
+    static BYTE func[] =
+    {
+        0x51,               /* push %rcx */
+        0x0f, 0xae, 0x11,   /* ldmxcsr (%rcx) */
+        0xcc,               /* int3 */
+        0x59,               /* pop %rcx */
+        0x0f, 0xae, 0x19,   /* stmxcsr (%rcx) */
+        0xc3,               /* ret */
+    };
+    char context_buffer[sizeof(CONTEXT) + sizeof(CONTEXT_EX) + sizeof(XSTATE) + 4096];
+    NTSTATUS (*func_ptr)( DWORD *mxcsr );
+    CONTEXT_EX *c_ex;
+    XSAVE_FORMAT *xs;
+    XSTATE *xstate;
+    void *handler;
+    HANDLE thread;
+    CONTEXT *ctx;
+    DWORD length;
+    DWORD mxcsr;
+    BOOL bret;
+
+    if (!pRtlGetEnabledExtendedFeatures || !pRtlGetEnabledExtendedFeatures( 1 << XSTATE_LEGACY_FLOATING_POINT ))
+    {
+        skip( "XState legacy FP is not supported.\n" );
+        return;
+    }
+
+    length = sizeof(context_buffer);
+    bret = pInitializeContext (context_buffer, CONTEXT_ALL | CONTEXT_XSTATE, &ctx, &length );
+    ok( bret, "got error %lu.\n", GetLastError() );
+
+    xs = LocateXStateFeature( ctx, XSTATE_LEGACY_FLOATING_POINT, NULL );
+    ok( xs == &ctx->FltSave, "got %p, %p.\n", xs, &ctx->FltSave );
+
+    thread = CreateThread( NULL, 0, test_set_context_mxcsr_thread_proc, NULL, CREATE_SUSPENDED, NULL );
+    ok( !!thread, "got NULL.\n" );
+
+    memset( ctx, 0xcc, sizeof(*ctx) );
+    ctx->ContextFlags = CONTEXT_ALL | CONTEXT_XSTATE;
+    bret = GetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+
+    ok( ctx->MxCsr == 0x1f80, "got %#lx.\n", ctx->MxCsr );
+    ok( xs->MxCsr == 0x1f80, "got %#lx.\n", ctx->MxCsr );
+
+    ctx->MxCsr = 0x1f81;
+    xs->MxCsr = 0x1f82;
+
+    ctx->ContextFlags = CONTEXT_FLOATING_POINT;
+    bret = SetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ctx->ContextFlags = CONTEXT_ALL | CONTEXT_XSTATE;
+    bret = GetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ok( ctx->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+    ok( xs->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+
+    ctx->MxCsr = 0x1f83;
+    xs->MxCsr = 0x1f84;
+    ctx->ContextFlags = CONTEXT_CONTROL;
+    bret = SetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ctx->ContextFlags = CONTEXT_ALL | CONTEXT_XSTATE;
+    bret = GetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ok( ctx->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+    ok( xs->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+
+    ctx->MxCsr = 0x1f83;
+    xs->MxCsr = 0x1f84;
+    c_ex = (CONTEXT_EX *)(ctx + 1);
+    xstate = (XSTATE *)((char *)c_ex + c_ex->XState.Offset);
+    xstate->Mask |= XSTATE_MASK_LEGACY;
+    ctx->ContextFlags = CONTEXT_XSTATE;
+    bret = SetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ctx->ContextFlags = CONTEXT_ALL | CONTEXT_XSTATE;
+    bret = GetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ok( ctx->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+    ok( xs->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+
+    ctx->MxCsr = 0x1f83;
+    xs->MxCsr = 0x1f84;
+    ctx->ContextFlags = (CONTEXT_ALL & ~CONTEXT_FLOATING_POINT) | CONTEXT_AMD64;
+    bret = SetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ctx->ContextFlags = CONTEXT_ALL | CONTEXT_XSTATE;
+    bret = GetThreadContext( thread, ctx );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ok( ctx->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+    ok( xs->MxCsr == 0x1f81, "got %#lx.\n", ctx->MxCsr );
+
+    ResumeThread( thread );
+    WaitForSingleObject( thread, INFINITE );
+    CloseHandle( thread );
+
+    handler = AddVectoredExceptionHandler( TRUE, test_set_context_mxcsr_handler );
+
+    memcpy( code_mem, func, sizeof(func) );
+    func_ptr = code_mem;
+
+    set_context_mxcsr_test_ctx_flags = 0;
+    mxcsr = 0x1f85;
+    func_ptr( &mxcsr );
+    ok( mxcsr == 0x1f81, "got %#lx.\n", mxcsr );
+
+    set_context_mxcsr_test_ctx_flags &= ~CONTEXT_FLOATING_POINT | CONTEXT_AMD64;
+    mxcsr = 0x1f85;
+    func_ptr( &mxcsr );
+    ok( mxcsr == 0x1f85, "got %#lx.\n", mxcsr );
+
+    RemoveVectoredExceptionHandler( handler );
 }
 
 #elif defined(__arm__)
@@ -8888,6 +9120,56 @@ static void test_mrs_currentel(void)
     FlushInstructionCache( GetCurrentProcess(), func_ptr, sizeof(call_func) );
     result = func_ptr();
     ok( result == 0, "expected 0, got %llx\n", result );
+}
+
+static BOOL got_misaligned_exception;
+
+static const DWORD misaligned_code[] =
+{
+    0xa9bf7bfd, /* stp x29, x30, [sp, #-16]! */
+    0x910003fd, /* mov x29, sp */
+    0x91003c00, /* add x0, x0, #15 */
+    0xc89ffc12, /* stlr x18, [x0] */
+    0xa8c17bfd, /* ldp x29, x30, [sp], #16 */
+    0xd65f03c0, /* ret */
+};
+
+static DWORD WINAPI misaligned_exception_handler( EXCEPTION_RECORD *rec, void *frame,
+                                                  CONTEXT *context, DISPATCHER_CONTEXT *dispatcher )
+{
+    ok( rec->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT, "got: %08lx\n", rec->ExceptionCode );
+    ok( rec->NumberParameters == 0, "got: %ld\n", rec->NumberParameters );
+    ok( rec->ExceptionAddress == (void *)context->Pc, "got addr: %p, pc: %p\n", rec->ExceptionAddress, (void *)context->Pc );
+    got_misaligned_exception = TRUE;
+    context->Pc += 4;
+    return ExceptionContinueExecution;
+}
+
+static void test_misaligned(void)
+{
+    /* Windows, Linux, and macOS all set SCTLR_EL1.A = 0, so most instructions
+     * will not generate an alignment fault.
+     * When FEAT_LSE2 is not implemented, load/store-exclusive and atomic instructions
+     * will generate a fault on unaligned accesses.
+     * When FEAT_LSE2 is implemented there are fewer situations where a fault is generated,
+     * but one is non-atomic load-acquire/store-release instructions accessing across
+     * a 16-byte quantity when SCTLR_EL1.nAA is 0.
+     * (All Apple chips support FEAT_LSE2, as does the Snapdragon X Elite).
+     *
+     * Test that situation here: a store to memory with release semantics, where not
+     * all bytes of the store lie within a single 16-byte aligned block.
+     *
+     * Windows sets SCTLR_EL1.nAA to 1 so there's no fault.
+     * Linux and macOS set it to 0 and do fault.
+     */
+    DWORD64 buf[4];
+    got_misaligned_exception = FALSE;
+    run_exception_test( misaligned_exception_handler, NULL, misaligned_code,
+                        sizeof(misaligned_code), sizeof(misaligned_code),
+                        PAGE_EXECUTE_READ, UNW_FLAG_EHANDLER,
+                        buf, 0 );
+    todo_wine
+    ok( !got_misaligned_exception, "Got misaligned data exception.\n" );
 }
 
 
@@ -12377,6 +12659,65 @@ static void test_context_exception_request(void)
     CloseHandle( p.event );
 }
 
+typedef struct
+{
+    LIST_ENTRY entry;
+    ULONG_PTR *count;
+    void *unk1;
+    PVECTORED_EXCEPTION_HANDLER func;
+}
+VECTORED_HANDLER;
+
+static VECTORED_HANDLER *test_RtlAddVectoredExceptionHandler_vh2;
+
+static LONG CALLBACK test_RtlAddVectoredExceptionHandler_handler2( EXCEPTION_POINTERS *info )
+{
+    EXCEPTION_RECORD *rec = info->ExceptionRecord;
+
+    ok( rec->ExceptionCode == 0xeadbeef, "got %#lx, address %p.\n", rec->ExceptionCode, rec->ExceptionAddress );
+    ok( *test_RtlAddVectoredExceptionHandler_vh2->count == 2, "got %Iu.\n", *test_RtlAddVectoredExceptionHandler_vh2->count );
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static LONG CALLBACK test_RtlAddVectoredExceptionHandler_handler( EXCEPTION_POINTERS *info )
+{
+    ok( 0, "got here.\n" );
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void test_RtlAddVectoredExceptionHandler(void)
+{
+    VECTORED_HANDLER *vh, *vh2;
+    void *func;
+
+    vh = pRtlAddVectoredExceptionHandler( TRUE, test_RtlAddVectoredExceptionHandler_handler );
+    ok( !!vh, "got NULL.\n" );
+    if ((ULONG)(ULONG_PTR)vh->count == 1)
+    {
+        win_skip( "Old layout, skipping tests.\n" );
+        pRtlRemoveVectoredExceptionHandler( vh );
+        return;
+    }
+    ok( *vh->count == 1, "got %Iu.\n", *vh->count );
+    func = DecodePointer( vh->func );
+    ok( func == test_RtlAddVectoredExceptionHandler_handler, "got %p, %p.\n", func, test_RtlAddVectoredExceptionHandler_handler );
+
+    vh2 = pRtlAddVectoredExceptionHandler( TRUE, test_RtlAddVectoredExceptionHandler_handler2 );
+    ok( !!vh2, "got NULL.\n" );
+    ok( *vh2->count == 1, "got %Iu.\n", *vh->count );
+    func = DecodePointer( vh2->func );
+    ok( func == test_RtlAddVectoredExceptionHandler_handler2, "got %p, %p.\n", func, test_RtlAddVectoredExceptionHandler_handler2 );
+
+    ok( vh->entry.Blink == (void *)vh2, "got %p, %p.\n", vh->entry.Flink, vh2 );
+    ok( vh2->entry.Flink == (void *)vh, "got %p, %p.\n", vh->entry.Blink, vh );
+
+    test_RtlAddVectoredExceptionHandler_vh2 = vh2;
+    RaiseException( 0xeadbeef, 0, 0, NULL );
+
+    pRtlRemoveVectoredExceptionHandler( vh );
+    pRtlRemoveVectoredExceptionHandler( vh2 );
+}
+
 START_TEST(exception)
 {
     HMODULE hkernel32 = GetModuleHandleA("kernel32.dll");
@@ -12400,12 +12741,8 @@ START_TEST(exception)
     X(NtGetContextThread);
     X(NtSetContextThread);
     X(NtQueueApcThread);
-    X(NtQueueApcThreadEx);
-    X(NtQueueApcThreadEx2);
-    X(NtContinueEx);
     X(NtReadVirtualMemory);
     X(NtClose);
-    X(RtlUnwind);
     X(RtlRaiseException);
     X(RtlCaptureContext);
     X(NtTerminateProcess);
@@ -12413,14 +12750,28 @@ START_TEST(exception)
     X(RtlRemoveVectoredExceptionHandler);
     X(RtlAddVectoredContinueHandler);
     X(RtlRemoveVectoredContinueHandler);
-    X(RtlSetUnhandledExceptionFilter);
     X(NtQueryInformationThread);
-    X(NtSetInformationProcess);
     X(NtSuspendProcess);
-    X(NtRaiseException);
     X(NtResumeProcess);
     X(RtlGetUnloadEventTrace);
     X(RtlGetUnloadEventTraceEx);
+    X(RtlPcToFileHeader);
+    X(RtlGetCallersAddress);
+    X(KiUserApcDispatcher);
+    X(KiUserCallbackDispatcher);
+    X(KiUserExceptionDispatcher);
+
+#ifndef __i386__
+    X(RtlRestoreContext);
+    X(RtlUnwindEx);
+    X(RtlAddFunctionTable);
+    X(RtlDeleteFunctionTable);
+    X(RtlSetUnhandledExceptionFilter);
+#endif
+
+#if defined(__x86_64__) || defined(__i386__)
+    X(RtlCopyContext);
+    X(RtlCopyExtendedContext);
     X(RtlGetEnabledExtendedFeatures);
     X(RtlGetExtendedContextLength);
     X(RtlGetExtendedContextLength2);
@@ -12430,22 +12781,20 @@ START_TEST(exception)
     X(RtlLocateLegacyContext);
     X(RtlSetExtendedFeaturesMask);
     X(RtlGetExtendedFeaturesMask);
-    X(RtlPcToFileHeader);
-    X(RtlGetCallersAddress);
-    X(RtlCopyContext);
-    X(RtlCopyExtendedContext);
-    X(KiUserApcDispatcher);
-    X(KiUserCallbackDispatcher);
-    X(KiUserExceptionDispatcher);
-#ifndef __i386__
-    X(RtlRestoreContext);
-    X(RtlUnwindEx);
-    X(RtlAddFunctionTable);
-    X(RtlDeleteFunctionTable);
-    X(RtlGetNativeSystemInformation);
+    X(RtlUnwind);
+    X(NtSetInformationProcess);
+#endif
+
+#if defined(__x86_64__) || defined(__aarch64__)
+    X(NtContinueEx);
 #endif
 
 #ifdef __x86_64__
+    X(NtQueueApcThreadEx);
+    X(NtQueueApcThreadEx2);
+    X(NtRaiseException);
+    X(RtlGetNativeSystemInformation);
+
     if (pRtlGetNativeSystemInformation)
     {
         SYSTEM_CPU_INFORMATION info;
@@ -12470,18 +12819,22 @@ START_TEST(exception)
         }
     }
 
+#if defined(__x86_64__) || defined(__i386__)
     X(InitializeContext);
     X(InitializeContext2);
     X(LocateXStateFeature);
     X(SetXStateFeaturesMask);
     X(GetXStateFeaturesMask);
+#endif
     X(WaitForDebugEventEx);
 #undef X
 
+#if defined(__x86_64__) || defined(__i386__)
     if (pRtlAddVectoredExceptionHandler && pRtlRemoveVectoredExceptionHandler)
         have_vectored_api = TRUE;
     else
         skip("RtlAddVectoredExceptionHandler or RtlRemoveVectoredExceptionHandler not found\n");
+#endif
 
     my_argc = winetest_get_mainargs( &my_argv );
     if (my_argc >= 4)
@@ -12626,6 +12979,8 @@ START_TEST(exception)
     test_direct_syscalls();
     test_single_step_address();
     test_base_init_thunk_unwind();
+    test_backtrace_without_runtime_function();
+    test_set_context_mxcsr();
 
 #elif defined(__aarch64__)
 
@@ -12635,6 +12990,7 @@ START_TEST(exception)
     test_collided_unwind();
     test_restore_context();
     test_mrs_currentel();
+    test_misaligned();
 
 #elif defined(__arm__)
 
@@ -12680,5 +13036,6 @@ START_TEST(exception)
     test_unload_trace();
     test_backtrace();
     test_context_exception_request();
+    test_RtlAddVectoredExceptionHandler();
     VirtualFree(code_mem, 0, MEM_RELEASE);
 }

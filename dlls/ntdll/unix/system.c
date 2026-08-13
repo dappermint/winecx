@@ -24,6 +24,7 @@
 
 #include "config.h"
 
+#include <assert.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdarg.h>
@@ -36,6 +37,9 @@
 #include <sys/time.h>
 #include <time.h>
 #include <dirent.h>
+#ifdef HAVE_ASM_HWCAP_H
+# include <asm/hwcap.h>
+#endif
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
@@ -73,8 +77,59 @@
 # include <hwloc.h>
 #endif
 
+#ifdef __linux__
+# define AT_HWCAP2          26
+#endif
+
+#if defined(__aarch64__) && defined(AT_HWCAP)
+# define HWCAP_AES          (1 << 3)
+# define HWCAP_CRC32        (1 << 7)
+# define HWCAP_ATOMICS      (1 << 8)
+# define HWCAP_FPHP         (1 << 9)
+# define HWCAP_CPUID        (1 << 11)
+# define HWCAP_JSCVT        (1 << 13)
+# define HWCAP_LRCPC        (1 << 15)
+# define HWCAP_SHA3         (1 << 17)
+# define HWCAP_ASIMDDP      (1 << 20)
+# define HWCAP_SHA512       (1 << 21)
+# define HWCAP_SVE          (1 << 22)
+# define HWCAP_USCAT        (1 << 25)
+# define HWCAP_SME2P2       (1UL << 42)
+# define HWCAP_SME_SBITPERM (1UL << 43)
+# define HWCAP_SME_AES      (1UL << 44)
+# define HWCAP2_SVE2        (1 << 1)
+# define HWCAP2_SVEAES      (1 << 2)
+# define HWCAP2_SVEPMULL    (1 << 3)
+# define HWCAP2_SVEBITPERM  (1 << 4)
+# define HWCAP2_SVESHA3     (1 << 5)
+# define HWCAP2_SVESM4      (1 << 6)
+# define HWCAP2_SVEI8MM     (1 << 9)
+# define HWCAP2_SVEF32MM    (1 << 10)
+# define HWCAP2_SVEF64MM    (1 << 11)
+# define HWCAP2_SVEBF16     (1 << 12)
+# define HWCAP2_I8MM        (1 << 13)
+# define HWCAP2_BF16        (1 << 14)
+# define HWCAP2_SME         (1 << 23)
+# define HWCAP2_SME_I16I64  (1 << 24)
+# define HWCAP2_SME_F64F64  (1 << 25)
+# define HWCAP2_SME_FA64    (1 << 30)
+# define HWCAP2_EBF16       (1UL << 32)
+# define HWCAP2_SVE_EBF16   (1UL << 33)
+# define HWCAP2_SVE2P1      (1UL << 36)
+# define HWCAP2_SME2        (1UL << 37)
+# define HWCAP2_SME2P1      (1UL << 38)
+# define HWCAP2_SME_F16F16  (1UL << 42)
+# define HWCAP2_SME_B16B16  (1UL << 41)
+# define HWCAP2_SVE_B16B16  (1UL << 45)
+# define HWCAP2_SME_LUTV2   (1UL << 57)
+# define HWCAP2_SME_F8F16   (1UL << 58)
+# define HWCAP2_SME_F8F32   (1UL << 59)
+# define HWCAP2_SME_SF8FMA  (1UL << 60)
+# define HWCAP2_SME_SF8DP4  (1UL << 61)
+# define HWCAP2_SME_SF8DP2  (1UL << 62)
+#endif
+
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
@@ -263,6 +318,15 @@ static unsigned int logical_proc_info_ex_size, logical_proc_info_ex_alloc_size;
 static ULONG_PTR system_cpu_mask;
 
 static pthread_mutex_t timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static const char default_tzinfo_dir[] = "/usr/share/zoneinfo";
+static const WCHAR Time_ZonesW[] = { '\\','R','e','g','i','s','t','r','y','\\',
+    'M','a','c','h','i','n','e','\\',
+    'S','o','f','t','w','a','r','e','\\',
+    'M','i','c','r','o','s','o','f','t','\\',
+    'W','i','n','d','o','w','s',' ','N','T','\\',
+    'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\\',
+    'T','i','m','e',' ','Z','o','n','e','s',0 };
 
 /*******************************************************************************
  * Architecture specific feature detection for CPUs
@@ -515,7 +579,7 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
         features[PF_AVX512F_INSTRUCTIONS_AVAILABLE] = !!(regs[1] & (1 << 16));
         features[PF_RDPID_INSTRUCTION_AVAILABLE]    = !!(regs[2] & (1 << 22));
         features[PF_MOVDIR64B_INSTRUCTION_AVAILABLE]= !!(regs[2] & (1 << 28));
-#if defined(__linux__) && defined(AT_HWCAP2)
+#if defined(__linux__)
         features[PF_RDWRFSGSBASE_AVAILABLE] &= !!(getauxval( AT_HWCAP2 ) & 2);
 #endif
     }
@@ -537,18 +601,67 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
 
 #elif defined(__arm__) || defined(__aarch64__)
 
-static int has_feature( const char *line, const char *feat )
+#if defined(AT_HWCAP)
+static BOOLEAN has_capability( int hwcap, unsigned long hwcap_bit )
 {
-    size_t len = strlen(feat);
-
-    while (*line)
+    unsigned long type;
+    switch (hwcap)
     {
-        while (*line == ' ' || *line == '\t') line++;
-        if (!strncmp( line, feat, len ) && (!line[len] || isspace(line[len]))) return 1;
-        while (*line && *line != ' ' && *line != '\t') line++;
+    case 1: type = AT_HWCAP;  break;
+    case 2: type = AT_HWCAP2; break;
+    default: return FALSE;
     }
-    return 0;
+    return !!(getauxval( type ) & hwcap_bit);
 }
+
+#define HAS_FEATURE(hwcap, hwcap_bit, ...) has_capability( hwcap, hwcap_bit )
+#elif defined(__APPLE__)
+static BOOLEAN has_feature( const char *feature )
+{
+    char buf[200];
+    int val;
+    size_t size = sizeof(val);
+
+    snprintf( buf, sizeof(buf), "hw.optional.arm.%s", feature );
+    if (!sysctlbyname( buf, &val, &size, NULL, 0 ))
+        return !!val;
+    return FALSE;
+}
+
+static BOOLEAN has_features( int dummy, ... )
+{
+    BOOLEAN ret = TRUE;
+    const char *feature;
+    va_list args;
+
+    va_start( args, dummy );
+
+    while ((feature = va_arg( args, const char * )))
+    {
+        if (has_feature( feature ))
+            continue;
+
+        ret = FALSE;
+        break;
+    }
+
+    va_end( args );
+    return ret;
+}
+#define HAS_FEATURE(hwcap, hwcap_bit, ...) has_features( 0, __VA_ARGS__, NULL )
+#else
+#define HAS_FEATURE(hwcap, hwcap_bit, ...) 0
+#endif
+
+#ifdef __aarch64__
+static void set_feature_bitmap( ULONG flag, BOOLEAN enabled )
+{
+    assert( flag >= PROCESSOR_FEATURE_MAX );
+    if (!enabled) return;
+    flag -= PROCESSOR_FEATURE_MAX;
+    cpu_features_bitmap[flag / 64] |= 1ull << (flag % 64);
+}
+#endif
 
 static void init_cpu_model(void)
 {
@@ -575,46 +688,6 @@ static void init_cpu_model(void)
             else if (!strcmp( line, "CPU part" )) part = strtoul( value, NULL, 0);
             else if (!strcmp( line, "CPU variant" )) variant = strtoul( value, NULL, 0);
             else if (!strcmp( line, "CPU revision" )) revision = strtoul( value, NULL, 0);
-            else if (!strcmp( line, "Features" ))
-            {
-                static const struct { ULONG flag; const char *name; } features[] =
-                {
-                    { PF_ARM_SHA3_INSTRUCTIONS_AVAILABLE, "sha3" },
-                    { PF_ARM_SHA512_INSTRUCTIONS_AVAILABLE, "sha512" },
-                    { PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE, "i8mm" },
-                    { PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE, "fphp" },
-                    { PF_ARM_V86_BF16_INSTRUCTIONS_AVAILABLE, "bf16" },
-                    { PF_ARM_V86_EBF16_INSTRUCTIONS_AVAILABLE, "ebf16" },
-                    { PF_ARM_SME_INSTRUCTIONS_AVAILABLE, "sme" },
-                    { PF_ARM_SME2_INSTRUCTIONS_AVAILABLE, "sme2" },
-                    { PF_ARM_SME2_1_INSTRUCTIONS_AVAILABLE, "sme2p1" },
-                    { PF_ARM_SME2_2_INSTRUCTIONS_AVAILABLE, "sme2p2" },
-                    { PF_ARM_SME_AES_INSTRUCTIONS_AVAILABLE, "smeaes" },
-                    { PF_ARM_SME_SBITPERM_INSTRUCTIONS_AVAILABLE, "smesbitperm" },
-                    /* The PF_ARM_SME_SF8MM4_INSTRUCTIONS_AVAILABLE and
-                     * PF_ARM_SME_SF8MM8_INSTRUCTIONS_AVAILABLE flags aren't exposed by
-                     * the Linux kernel, see
-                     * https://lists.infradead.org/pipermail/linux-arm-kernel/2025-January/991187.html */
-                    { PF_ARM_SME_SF8DP2_INSTRUCTIONS_AVAILABLE, "smesf8dp2" },
-                    { PF_ARM_SME_SF8DP4_INSTRUCTIONS_AVAILABLE, "smesf8dp4" },
-                    { PF_ARM_SME_SF8FMA_INSTRUCTIONS_AVAILABLE, "smesf8fma" },
-                    { PF_ARM_SME_F8F32_INSTRUCTIONS_AVAILABLE, "smef8f32" },
-                    { PF_ARM_SME_F8F16_INSTRUCTIONS_AVAILABLE, "smef8f16" },
-                    { PF_ARM_SME_F16F16_INSTRUCTIONS_AVAILABLE, "smef16f16" },
-                    { PF_ARM_SME_B16B16_INSTRUCTIONS_AVAILABLE, "smeb16b16" },
-                    { PF_ARM_SME_F64F64_INSTRUCTIONS_AVAILABLE, "smef64f64" },
-                    { PF_ARM_SME_I16I64_INSTRUCTIONS_AVAILABLE, "smei16i64" },
-                    { PF_ARM_SME_LUTv2_INSTRUCTIONS_AVAILABLE, "smelutv2" },
-                    { PF_ARM_SME_FA64_INSTRUCTIONS_AVAILABLE, "smefa64" },
-                };
-
-                for (unsigned int i = 0; i < ARRAY_SIZE(features); i++)
-                {
-                    ULONG flag = features[i].flag - PROCESSOR_FEATURE_MAX;
-                    if (!has_feature( value, features[i].name )) continue;
-                    cpu_features_bitmap[flag / 64] |= 1ull << (flag % 64);
-                }
-            }
         }
         fclose( f );
     }
@@ -636,6 +709,38 @@ static void init_cpu_model(void)
     case 0x66: strcpy( cpu_vendor, "Faraday" ); break;
     case 0x69: strcpy( cpu_vendor, "Intel" ); break;
     }
+
+#ifdef __aarch64__
+    set_feature_bitmap( PF_ARM_SHA3_INSTRUCTIONS_AVAILABLE,      HAS_FEATURE( 1, HWCAP_SHA3, "FEAT_SHA3" ) );
+    set_feature_bitmap( PF_ARM_SHA512_INSTRUCTIONS_AVAILABLE,    HAS_FEATURE( 1, HWCAP_SHA512, "FEAT_SHA512" ) );
+    set_feature_bitmap( PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 2, HWCAP2_I8MM, "FEAT_I8MM" ) );
+    set_feature_bitmap( PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 1, HWCAP_FPHP, "FEAT_FP16" ) );
+    set_feature_bitmap( PF_ARM_V86_BF16_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 2, HWCAP2_BF16, "FEAT_BF16" ) );
+    set_feature_bitmap( PF_ARM_V86_EBF16_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_EBF16, "FEAT_EBF16" ) );
+    set_feature_bitmap( PF_ARM_SME_INSTRUCTIONS_AVAILABLE,       HAS_FEATURE( 2, HWCAP2_SME, "FEAT_SME" ) );
+    set_feature_bitmap( PF_ARM_SME2_INSTRUCTIONS_AVAILABLE,      HAS_FEATURE( 2, HWCAP2_SME2, "FEAT_SME2" ) );
+    set_feature_bitmap( PF_ARM_SME2_1_INSTRUCTIONS_AVAILABLE,    HAS_FEATURE( 2, HWCAP2_SME2P1, "FEAT_SME2p1" ) );
+    set_feature_bitmap( PF_ARM_SME2_2_INSTRUCTIONS_AVAILABLE,    HAS_FEATURE( 1, HWCAP_SME2P2, "FEAT_SME2p2" ) );
+    set_feature_bitmap( PF_ARM_SME_AES_INSTRUCTIONS_AVAILABLE,   HAS_FEATURE( 1, HWCAP_SME_AES, "FEAT_SSVE_AES" ) );
+    set_feature_bitmap( PF_ARM_SME_SBITPERM_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 1, HWCAP_SME_SBITPERM, "FEAT_SSVE_BitPerm" ) );
+    /* The PF_ARM_SME_SF8MM4_INSTRUCTIONS_AVAILABLE and
+     * PF_ARM_SME_SF8MM8_INSTRUCTIONS_AVAILABLE flags aren't exposed by
+     * the Linux kernel, see
+     * https://lists.infradead.org/pipermail/linux-arm-kernel/2025-January/991187.html */
+    set_feature_bitmap( PF_ARM_SME_SF8MM4_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 0, 0, "FEAT_SSVE_F8F16MM" ) );
+    set_feature_bitmap( PF_ARM_SME_SF8MM8_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 0, 0, "FEAT_SSVE_F8F32MM" ) );
+    set_feature_bitmap( PF_ARM_SME_SF8DP2_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_SF8DP2, "FEAT_SSVE_FP8DOT2" ) );
+    set_feature_bitmap( PF_ARM_SME_SF8DP4_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_SF8DP4, "FEAT_SSVE_FP8DOT4" ) );
+    set_feature_bitmap( PF_ARM_SME_SF8FMA_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_SF8FMA, "FEAT_SSVE_FP8FMA" ) );
+    set_feature_bitmap( PF_ARM_SME_F8F32_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 2, HWCAP2_SME_F8F32, "FEAT_SME_F8F32" ) );
+    set_feature_bitmap( PF_ARM_SME_F8F16_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 2, HWCAP2_SME_F8F16, "FEAT_SME_F8F16" ) );
+    set_feature_bitmap( PF_ARM_SME_F16F16_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_F16F16, "FEAT_SME_F16F16" ) );
+    set_feature_bitmap( PF_ARM_SME_B16B16_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_B16B16, "FEAT_SME_B16B16" ) );
+    set_feature_bitmap( PF_ARM_SME_F64F64_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_F64F64, "FEAT_SME_F64F64" ) );
+    set_feature_bitmap( PF_ARM_SME_I16I64_INSTRUCTIONS_AVAILABLE, HAS_FEATURE( 2, HWCAP2_SME_I16I64, "FEAT_SME_I16I64" ) );
+    set_feature_bitmap( PF_ARM_SME_LUTv2_INSTRUCTIONS_AVAILABLE,  HAS_FEATURE( 2, HWCAP2_SME_LUTV2, "FEAT_SME_LUTv2" ) );
+    set_feature_bitmap( PF_ARM_SME_FA64_INSTRUCTIONS_AVAILABLE,   HAS_FEATURE( 2, HWCAP2_SME_FA64, "FEAT_SME_FA64" ) );
+#endif
 }
 
 static ULONGLONG get_cpu_features(void)
@@ -647,71 +752,48 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
 {
     BOOLEAN *features = data->ProcessorFeatures;
 
-#ifdef linux
-    FILE *f = fopen("/proc/cpuinfo", "r");
-    if (f)
-    {
-        char *s, *value, line[512];
-        while (fgets( line, sizeof(line), f ))
-        {
-            /* NOTE: the ':' is the only character we can rely on */
-            if (!(value = strchr(line,':'))) continue;
-            /* terminate the valuename */
-            s = value - 1;
-            while ((s >= line) && (*s == ' ' || *s == '\t')) s--;
-            s[1] = 0;
-            value++;
-            if ((s = strchr( value, '\n' ))) *s = 0;
-            if (strcmp( line, "Features" )) continue;
-            features[PF_ARM_VFP_32_REGISTERS_AVAILABLE]          = has_feature( value, "vfpv3" );
-            features[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE]         = has_feature( value, "neon" );
-            features[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE]        = has_feature( value, "idivt" );
-            if (native_machine == IMAGE_FILE_MACHINE_ARMNT) break;
-            features[PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE]     = has_feature( value, "crc32" );
-            features[PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "aes" );
-            features[PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE]   = has_feature( value, "atomics" );
-            features[PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE]       = has_feature( value, "asimddp" );
-            features[PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "jscvt" );
-            features[PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "lrcpc" );
-            features[PF_ARM_SVE_INSTRUCTIONS_AVAILABLE]          = has_feature( value, "sve" );
-            features[PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE]         = has_feature( value, "sve2" );
-            features[PF_ARM_SVE2_1_INSTRUCTIONS_AVAILABLE]       = has_feature( value, "sve2p1" );
-            features[PF_ARM_SVE_AES_INSTRUCTIONS_AVAILABLE]      = has_feature( value, "sveaes" );
-            features[PF_ARM_SVE_PMULL128_INSTRUCTIONS_AVAILABLE] = has_feature( value, "svepmull" );
-            features[PF_ARM_SVE_BITPERM_INSTRUCTIONS_AVAILABLE]  = has_feature( value, "svebitperm" );
-            features[PF_ARM_SVE_BF16_INSTRUCTIONS_AVAILABLE]     = has_feature( value, "svebf16" );
-            features[PF_ARM_SVE_EBF16_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "sveebf16" );
-            features[PF_ARM_SVE_B16B16_INSTRUCTIONS_AVAILABLE]   = has_feature( value, "sveb16b16" );
-            features[PF_ARM_SVE_SHA3_INSTRUCTIONS_AVAILABLE]     = has_feature( value, "svesha3" );
-            features[PF_ARM_SVE_SM4_INSTRUCTIONS_AVAILABLE]      = has_feature( value, "svesm4" );
-            features[PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE]     = has_feature( value, "svei8mm" );
-            features[PF_ARM_SVE_F32MM_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "svef32mm" );
-            features[PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE]    = has_feature( value, "svef64mm" );
-            features[PF_ARM_LSE2_AVAILABLE]                      = has_feature( value, "uscat" );
-            break;
-        }
-        fclose( f );
-    }
-#endif
-
     features[PF_FASTFAIL_AVAILABLE]      = TRUE;
     features[PF_COMPARE_EXCHANGE_DOUBLE] = TRUE;
 
-    if (native_machine == IMAGE_FILE_MACHINE_ARMNT) return;
-
-    features[PF_ARM_V8_INSTRUCTIONS_AVAILABLE] = TRUE;
-    features[PF_NX_ENABLED]                    = TRUE;
+#ifdef __arm__
+    features[PF_ARM_VFP_32_REGISTERS_AVAILABLE]          = HAS_FEATURE( 1, HWCAP_VFPv3 );
+    features[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE]         = HAS_FEATURE( 1, HWCAP_NEON );
+    features[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE]        = HAS_FEATURE( 1, HWCAP_IDIVT );
+#else
+    features[PF_ARM_VFP_32_REGISTERS_AVAILABLE]          = TRUE;
+    features[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE]         = TRUE;
+    features[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE]        = TRUE;
+    features[PF_ARM_64BIT_LOADSTORE_ATOMIC]              = TRUE;
+    features[PF_ARM_FMAC_INSTRUCTIONS_AVAILABLE]         = TRUE;
+    features[PF_ARM_V8_INSTRUCTIONS_AVAILABLE]           = TRUE;
+    features[PF_NX_ENABLED]                              = TRUE;
+    features[PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 1, HWCAP_AES, "FEAT_AES" );
+    features[PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE]     = HAS_FEATURE( 1, HWCAP_CRC32, "FEAT_CRC32" );
+    features[PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE]   = HAS_FEATURE( 1, HWCAP_ATOMICS, "FEAT_LSE" );
+    features[PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE]       = HAS_FEATURE( 1, HWCAP_ASIMDDP, "FEAT_DotProd" );
+    features[PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 1, HWCAP_JSCVT, "FEAT_JSCVT" );
+    features[PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 1, HWCAP_LRCPC, "FEAT_LRCPC" );
+    features[PF_ARM_SVE_INSTRUCTIONS_AVAILABLE]          = HAS_FEATURE( 1, HWCAP_SVE, "FEAT_SVE" );
+    features[PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE]         = HAS_FEATURE( 2, HWCAP2_SVE2, "FEAT_SVE2" );
+    features[PF_ARM_SVE2_1_INSTRUCTIONS_AVAILABLE]       = HAS_FEATURE( 2, HWCAP2_SVE2P1, "FEAT_SVE2p1" );
+    features[PF_ARM_SVE_AES_INSTRUCTIONS_AVAILABLE]      = HAS_FEATURE( 2, HWCAP2_SVEAES, "FEAT_SVE_AES" );
+    features[PF_ARM_SVE_PMULL128_INSTRUCTIONS_AVAILABLE] = HAS_FEATURE( 2, HWCAP2_SVEPMULL, "FEAT_SVE_PMULL128" );
+    features[PF_ARM_SVE_BITPERM_INSTRUCTIONS_AVAILABLE]  = HAS_FEATURE( 2, HWCAP2_SVEBITPERM, "FEAT_SVE_BitPerm" );
+    features[PF_ARM_SVE_BF16_INSTRUCTIONS_AVAILABLE]     = HAS_FEATURE( 2, HWCAP2_SVEBF16, "FEAT_SVE", "FEAT_BF16" );
+    features[PF_ARM_SVE_EBF16_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 2, HWCAP2_SVE_EBF16, "FEAT_SVE", "FEAT_EBF16" );
+    features[PF_ARM_SVE_B16B16_INSTRUCTIONS_AVAILABLE]   = HAS_FEATURE( 2, HWCAP2_SVE_B16B16, "FEAT_SVE_B16B16" );
+    features[PF_ARM_SVE_SHA3_INSTRUCTIONS_AVAILABLE]     = HAS_FEATURE( 2, HWCAP2_SVESHA3, "FEAT_SVE_SHA3" );
+    features[PF_ARM_SVE_SM4_INSTRUCTIONS_AVAILABLE]      = HAS_FEATURE( 2, HWCAP2_SVESM4, "FEAT_SVE_SM4" );
+    features[PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE]     = HAS_FEATURE( 2, HWCAP2_SVEI8MM, "FEAT_SVE", "FEAT_I8MM" );
+    features[PF_ARM_SVE_F32MM_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 2, HWCAP2_SVEF32MM, "FEAT_F32MM" );
+    features[PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE]    = HAS_FEATURE( 2, HWCAP2_SVEF64MM, "FEAT_F64MM" );
+    features[PF_ARM_LSE2_AVAILABLE]                      = HAS_FEATURE( 1, HWCAP_USCAT, "FEAT_LSE2" );
 
     /* add features for other architectures supported by wow64 */
     for (unsigned int i = 0; i < supported_machines_count; i++)
     {
         switch (supported_machines[i])
         {
-        case IMAGE_FILE_MACHINE_ARMNT:
-            features[PF_ARM_VFP_32_REGISTERS_AVAILABLE]   = TRUE;
-            features[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE]  = TRUE;
-            features[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE] = TRUE;
-            break;
         case IMAGE_FILE_MACHINE_I386:
             features[PF_MMX_INSTRUCTIONS_AVAILABLE]    = TRUE;
             features[PF_XMMI_INSTRUCTIONS_AVAILABLE]   = TRUE;
@@ -726,6 +808,7 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
             break;
         }
     }
+#endif
 }
 
 #endif /* End architecture specific feature detection for CPUs */
@@ -1597,6 +1680,38 @@ static void init_logical_proc_info(void)
     init_tsc_frequency();
 }
 
+static void read_dev_urandom( void *buf, ULONG len )
+{
+    int fd = open( "/dev/urandom", O_RDONLY );
+    if (fd != -1)
+    {
+        int ret;
+        do
+        {
+            ret = read( fd, buf, len );
+        }
+        while (ret == -1 && errno == EINTR);
+        close( fd );
+    }
+    else WARN( "can't open /dev/urandom\n" );
+}
+
+static void get_random( void *buf, ULONG len )
+{
+#ifdef HAVE_GETRANDOM
+    int ret;
+    do
+    {
+        ret = getrandom( buf, len, 0 );
+    }
+    while (ret == -1 && errno == EINTR);
+
+    if (ret == -1 && errno == ENOSYS) read_dev_urandom( buf, len );
+#else
+    read_dev_urandom( buf, len );
+#endif
+}
+
 /******************************************************************
  *		init_cpu_info
  *
@@ -1646,6 +1761,7 @@ void init_cpu_info(void)
 
     peb->NumberOfProcessors = num;
     init_cpu_model();
+    get_random( &process_cookie, sizeof(process_cookie) );
 }
 
 static SYSTEM_CPU_INFORMATION get_cpuinfo(void)
@@ -1935,8 +2051,6 @@ static WORD append_smbios_boot_info( struct smbios_buffer *buf )
 
 #ifdef __aarch64__
 #ifdef linux
-
-#include <asm/hwcap.h>
 
 static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs,
                                      WORD logical_thread_id )
@@ -2674,6 +2788,7 @@ static int weekday_to_mday(int year, int day, int mon, int day_of_week)
     do
     {
         date.tm_mday++;
+        date.tm_isdst = -1;
         tmp = mktime(&date);
     } while (date.tm_wday != day_of_week || date.tm_mon != mon);
 
@@ -2686,6 +2801,7 @@ static int weekday_to_mday(int year, int day, int mon, int day_of_week)
         struct tm *tm;
 
         date.tm_mday += 7;
+        date.tm_isdst = -1;
         tmp = mktime(&date);
         tm = localtime(&tmp);
         if (tm->tm_mon != mon)
@@ -2714,7 +2830,7 @@ static BOOL match_tz_date( const RTL_SYSTEM_TIME *st, const RTL_SYSTEM_TIME *reg
 
     return (st->wDay == wDay &&
             st->wHour == reg_st->wHour &&
-            st->wMinute == reg_st->wMinute &&
+            (st->wMinute == reg_st->wMinute || (st->wMinute == 30 && !reg_st->wMinute)) &&
             st->wSecond == reg_st->wSecond &&
             st->wMilliseconds == reg_st->wMilliseconds);
 }
@@ -2725,48 +2841,6 @@ static BOOL match_tz_info( const RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi,
     return (tzi->Bias == reg_tzi->Bias &&
             match_tz_date(&tzi->StandardDate, &reg_tzi->StandardDate) &&
             match_tz_date(&tzi->DaylightDate, &reg_tzi->DaylightDate));
-}
-
-static BOOL match_past_tz_bias( time_t past_time, LONG past_bias )
-{
-    LONG bias;
-    struct tm *tm;
-    if (!past_time) return TRUE;
-
-    tm = gmtime( &past_time );
-    bias = (LONG)(mktime(tm) - past_time) / 60;
-    return bias == past_bias;
-}
-
-static BOOL match_tz_name( const char *tz_name, const RTL_DYNAMIC_TIME_ZONE_INFORMATION *reg_tzi )
-{
-    static const struct {
-        WCHAR key_name[32];
-        const char *short_name;
-        time_t past_time;
-        LONG past_bias;
-    }
-    mapping[] =
-    {
-        { {'N','o','r','t','h',' ','K','o','r','e','a',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
-          "KST", 1451606400 /* 2016-01-01 00:00:00 UTC */, -510 },
-        { {'K','o','r','e','a',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
-          "KST", 1451606400 /* 2016-01-01 00:00:00 UTC */, -540 },
-        { {'T','o','k','y','o',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
-          "JST" },
-        { {'Y','a','k','u','t','s','k',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
-          "+09" }, /* YAKST was used until tzdata 2016f */
-    };
-    unsigned int i;
-
-    if (reg_tzi->DaylightDate.wMonth) return TRUE;
-    for (i = 0; i < ARRAY_SIZE(mapping); i++)
-    {
-        if (!wcscmp( mapping[i].key_name, reg_tzi->TimeZoneKeyName ))
-            return !strcmp( mapping[i].short_name, tz_name )
-                && match_past_tz_bias( mapping[i].past_time, mapping[i].past_bias );
-    }
-    return TRUE;
 }
 
 static BOOL reg_query_value( HKEY key, LPCWSTR name, DWORD type, void *data, DWORD count )
@@ -2787,32 +2861,83 @@ static BOOL reg_query_value( HKEY key, LPCWSTR name, DWORD type, void *data, DWO
     return TRUE;
 }
 
-static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char* tz_name, int year)
+static BOOL read_reg_tz_info( HANDLE key, UNICODE_STRING *zone_key_name, int year, RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
 {
     static const WCHAR stdW[] = { 'S','t','d',0 };
     static const WCHAR dltW[] = { 'D','l','t',0 };
     static const WCHAR mui_stdW[] = { 'M','U','I','_','S','t','d',0 };
     static const WCHAR mui_dltW[] = { 'M','U','I','_','D','l','t',0 };
     static const WCHAR tziW[] = { 'T','Z','I',0 };
-    static const WCHAR Time_ZonesW[] = { '\\','R','e','g','i','s','t','r','y','\\',
-        'M','a','c','h','i','n','e','\\',
-        'S','o','f','t','w','a','r','e','\\',
-        'M','i','c','r','o','s','o','f','t','\\',
-        'W','i','n','d','o','w','s',' ','N','T','\\',
-        'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\\',
-        'T','i','m','e',' ','Z','o','n','e','s',0 };
     static const WCHAR Dynamic_DstW[] = { 'D','y','n','a','m','i','c',' ','D','S','T',0 };
+    HANDLE subkey, subkey_dyn;
+    OBJECT_ATTRIBUTES attr;
+    struct tz_reg_data
+    {
+        LONG bias;
+        LONG std_bias;
+        LONG dlt_bias;
+        RTL_SYSTEM_TIME std_date;
+        RTL_SYSTEM_TIME dlt_date;
+    } tz_data;
+    BOOL is_dynamic = FALSE;
+    UNICODE_STRING name;
+    BOOL ret = FALSE;
+    char buffer[16];
+    WCHAR yearW[16];
+
+    InitializeObjectAttributes( &attr, zone_key_name, 0, key, NULL );
+    if (NtOpenKey( &subkey, KEY_READ, &attr )) return FALSE;
+
+    memset( tzi, 0, sizeof(*tzi) );
+    memcpy(tzi->TimeZoneKeyName, zone_key_name->Buffer, zone_key_name->Length);
+    tzi->TimeZoneKeyName[zone_key_name->Length / sizeof(WCHAR)] = 0;
+
+    if (!reg_query_value(subkey, mui_stdW, REG_SZ, tzi->StandardName, sizeof(tzi->StandardName)) &&
+        !reg_query_value(subkey, stdW, REG_SZ, tzi->StandardName, sizeof(tzi->StandardName)))
+        goto done;
+
+    if (!reg_query_value(subkey, mui_dltW, REG_SZ, tzi->DaylightName, sizeof(tzi->DaylightName)) &&
+        !reg_query_value(subkey, dltW, REG_SZ, tzi->DaylightName, sizeof(tzi->DaylightName)))
+        goto done;
+
+    /* Check for Dynamic DST entry first */
+    name.Buffer = (WCHAR *)Dynamic_DstW;
+    name.Length = sizeof(Dynamic_DstW) - sizeof(WCHAR);
+    attr.RootDirectory = subkey;
+    attr.ObjectName = &name;
+    if (!NtOpenKey( &subkey_dyn, KEY_READ, &attr ))
+    {
+        snprintf( buffer, sizeof(buffer), "%u", year );
+        ascii_to_unicode( yearW, buffer, strlen(buffer) + 1 );
+        is_dynamic = reg_query_value( subkey_dyn, yearW, REG_BINARY, &tz_data, sizeof(tz_data) );
+        NtClose( subkey_dyn );
+    }
+    if (!is_dynamic && !reg_query_value( subkey, tziW, REG_BINARY, &tz_data, sizeof(tz_data) ))
+        goto done;
+
+    tzi->Bias = tz_data.bias;
+    tzi->StandardBias = tz_data.std_bias;
+    tzi->DaylightBias = tz_data.dlt_bias;
+    tzi->StandardDate = tz_data.std_date;
+    tzi->DaylightDate = tz_data.dlt_date;
+
+    ret = TRUE;
+
+done:
+    NtClose( subkey );
+    return ret;
+}
+
+static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, int year)
+{
     RTL_DYNAMIC_TIME_ZONE_INFORMATION reg_tzi;
-    HANDLE key, subkey, subkey_dyn = 0;
+    HANDLE key;
     ULONG idx, len;
     OBJECT_ATTRIBUTES attr;
     UNICODE_STRING nameW;
-    WCHAR yearW[16];
     char buffer[128];
     KEY_BASIC_INFORMATION *info = (KEY_BASIC_INFORMATION *)buffer;
 
-    snprintf( buffer, sizeof(buffer), "%u", year );
-    ascii_to_unicode( yearW, buffer, strlen(buffer) + 1 );
     init_unicode_string( &nameW, Time_ZonesW );
     InitializeObjectAttributes( &attr, &nameW, 0, 0, NULL );
     if (NtOpenKey( &key, KEY_READ, &attr )) return;
@@ -2820,50 +2945,9 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
     idx = 0;
     while (!NtEnumerateKey( key, idx++, KeyBasicInformation, buffer, sizeof(buffer), &len ))
     {
-        struct tz_reg_data
-        {
-            LONG bias;
-            LONG std_bias;
-            LONG dlt_bias;
-            RTL_SYSTEM_TIME std_date;
-            RTL_SYSTEM_TIME dlt_date;
-        } tz_data;
-        BOOL is_dynamic = FALSE;
-
         nameW.Buffer = info->Name;
         nameW.Length = info->NameLength;
-        attr.RootDirectory = key;
-        if (NtOpenKey( &subkey, KEY_READ, &attr )) continue;
-
-        memset( &reg_tzi, 0, sizeof(reg_tzi) );
-        memcpy(reg_tzi.TimeZoneKeyName, nameW.Buffer, nameW.Length);
-        reg_tzi.TimeZoneKeyName[nameW.Length/sizeof(WCHAR)] = 0;
-
-        if (!reg_query_value(subkey, mui_stdW, REG_SZ, reg_tzi.StandardName, sizeof(reg_tzi.StandardName)) &&
-            !reg_query_value(subkey, stdW, REG_SZ, reg_tzi.StandardName, sizeof(reg_tzi.StandardName)))
-            goto next;
-
-        if (!reg_query_value(subkey, mui_dltW, REG_SZ, reg_tzi.DaylightName, sizeof(reg_tzi.DaylightName)) &&
-            !reg_query_value(subkey, dltW, REG_SZ, reg_tzi.DaylightName, sizeof(reg_tzi.DaylightName)))
-            goto next;
-
-        /* Check for Dynamic DST entry first */
-        nameW.Buffer = (WCHAR *)Dynamic_DstW;
-        nameW.Length = sizeof(Dynamic_DstW) - sizeof(WCHAR);
-        attr.RootDirectory = subkey;
-        if (!NtOpenKey( &subkey_dyn, KEY_READ, &attr ))
-        {
-            is_dynamic = reg_query_value( subkey_dyn, yearW, REG_BINARY, &tz_data, sizeof(tz_data) );
-            NtClose( subkey_dyn );
-        }
-        if (!is_dynamic && !reg_query_value( subkey, tziW, REG_BINARY, &tz_data, sizeof(tz_data) ))
-            goto next;
-
-        reg_tzi.Bias = tz_data.bias;
-        reg_tzi.StandardBias = tz_data.std_bias;
-        reg_tzi.DaylightBias = tz_data.dlt_bias;
-        reg_tzi.StandardDate = tz_data.std_date;
-        reg_tzi.DaylightDate = tz_data.dlt_date;
+        if (!read_reg_tz_info( key, &nameW, year, &reg_tzi )) continue;
 
         TRACE("%s: bias %d\n", debugstr_us(&nameW), reg_tzi.Bias);
         TRACE("std (d/m/y): %u/%02u/%04u day of week %u %u:%02u:%02u.%03u bias %d\n",
@@ -2879,23 +2963,20 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
               reg_tzi.DaylightDate.wSecond, reg_tzi.DaylightDate.wMilliseconds,
               reg_tzi.DaylightBias);
 
-        if (match_tz_info( tzi, &reg_tzi ) && match_tz_name( tz_name, &reg_tzi ))
+        if (match_tz_info( tzi, &reg_tzi ))
         {
             *tzi = reg_tzi;
-            NtClose( subkey );
             NtClose( key );
             return;
         }
-    next:
-        NtClose( subkey );
     }
     NtClose( key );
 
     if (idx == 1) return;  /* registry info not initialized yet */
 
     FIXME("Can't find matching timezone information in the registry for "
-          "%s, bias %d, std (d/m/y): %u/%02u/%04u, dlt (d/m/y): %u/%02u/%04u\n",
-          tz_name, tzi->Bias,
+          "bias %d, std (d/m/y): %u/%02u/%04u, dlt (d/m/y): %u/%02u/%04u\n",
+          tzi->Bias,
           tzi->StandardDate.wDay, tzi->StandardDate.wMonth, tzi->StandardDate.wYear,
           tzi->DaylightDate.wDay, tzi->DaylightDate.wMonth, tzi->DaylightDate.wYear);
 }
@@ -2905,14 +2986,25 @@ static time_t find_dst_change(time_t start, time_t end, int *is_dst)
     struct tm *tm;
     ULONGLONG min = (sizeof(time_t) == sizeof(int)) ? (ULONG)start : start;
     ULONGLONG max = (sizeof(time_t) == sizeof(int)) ? (ULONG)end : end;
+    time_t pos;
 
     tm = localtime(&start);
     *is_dst = !tm->tm_isdst;
     TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
 
+    for (pos = min; pos <= max; pos += 30 * 24 * 3600)
+    {
+        tm = localtime(&pos);
+        if (tm->tm_isdst == *is_dst)
+        {
+            max = pos;
+            break;
+        }
+    }
+
     while (min <= max)
     {
-        time_t pos = (min + max) / 2;
+        pos = (min + max) / 2;
         tm = localtime(&pos);
 
         if (tm->tm_isdst != *is_dst)
@@ -2923,14 +3015,99 @@ static time_t find_dst_change(time_t start, time_t end, int *is_dst)
     return min;
 }
 
+static BOOL get_tz_info_from_zoneinfo_name( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char *name, int year )
+{
+    static const WCHAR wine_tz_map[] = { '\\','R','e','g','i','s','t','r','y','\\',
+        'M','a','c','h','i','n','e','\\',
+        'S','o','f','t','w','a','r','e','\\',
+        'W','i','n','e','\\',
+        'T','i','m','e',' ','Z','o','n','e','s','\\',
+        'T','Z',' ','M','a','p','p','i','n','g',
+        0 };
+
+    const char *tzinfo_dir = getenv( "TZDIR" );
+    UNICODE_STRING key_name, win_name;
+    WCHAR nameW[64], win_nameW[64];
+    OBJECT_ATTRIBUTES attr;
+    char buf[MAX_PATH];
+    HANDLE key;
+    BOOL ret;
+    FILE *f;
+
+    TRACE( "name %s.\n", debugstr_a( name ));
+
+    if (strlen(name) >= ARRAY_SIZE(nameW)) return FALSE;
+
+    if (!tzinfo_dir) tzinfo_dir = default_tzinfo_dir;
+    snprintf( buf, sizeof(buf), "%s/%s", tzinfo_dir, name );
+
+    if (!(f = fopen( buf, "r" )))
+    {
+        WARN( "Could not open %s.\n", debugstr_a( buf ));
+        return FALSE;
+    }
+    fclose( f );
+
+    init_unicode_string( &key_name, wine_tz_map );
+    InitializeObjectAttributes( &attr, &key_name, 0, NULL, NULL );
+    if (NtOpenKey( &key, KEY_READ, &attr )) return FALSE;
+
+    ascii_to_unicode( nameW, name, strlen( name ) + 1 );
+    ret = reg_query_value( key, nameW, REG_SZ, win_nameW, sizeof(win_nameW) );
+    NtClose( key );
+    if (!ret) return FALSE;
+    TRACE( "got %s for %s.\n", debugstr_w(win_nameW), debugstr_a( name ) );
+
+    init_unicode_string( &key_name, Time_ZonesW );
+    if (NtOpenKey( &key, KEY_READ, &attr )) return FALSE;
+    init_unicode_string( &win_name, win_nameW );
+    ret = read_reg_tz_info( key, &win_name, year, tzi );
+    NtClose( key );
+    return ret;
+}
+
+static BOOL get_system_config_tz_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, int year )
+{
+    char path[PATH_MAX];
+    const char *str;
+    int len;
+
+    if ((str = getenv( "TZ" )))
+    {
+        if (*str == ':') ++str;
+        return get_tz_info_from_zoneinfo_name( tzi, str, year );
+    }
+
+    if (!realpath( "/etc/localtime", path )) return FALSE;
+    len = sizeof( default_tzinfo_dir ) - 1;
+    if (strncmp( path, default_tzinfo_dir, len )) return FALSE;
+    if (path[len] != '/') return FALSE;
+    return get_tz_info_from_zoneinfo_name( tzi, path + len + 1, year );
+}
+
+static LONG64 get_current_tz_bias(void)
+{
+    ULONG high, low;
+
+    do
+    {
+        high = user_shared_data->TimeZoneBias.High1Time;
+        low = user_shared_data->TimeZoneBias.LowPart;
+    }
+    while (high != user_shared_data->TimeZoneBias.High2Time);
+
+    return ((LONG64)high << 32) | low;
+}
+
 static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
 {
     static RTL_DYNAMIC_TIME_ZONE_INFORMATION cached_tzi;
     static int current_year = -1, current_bias = 65535;
-    struct tm *tm;
-    char tz_name[16];
+    RTL_DYNAMIC_TIME_ZONE_INFORMATION reg_tzi;
+    struct tm *tm, tm1, tm2;
     time_t year_start, year_end, tmp, dlt = 0, std = 0;
     int is_dst, bias;
+    BOOL inverted_dst;
 
     mutex_lock( &timezone_mutex );
 
@@ -2946,24 +3123,26 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
         return;
     }
 
-    memset(tzi, 0, sizeof(*tzi));
-    if (!strftime(tz_name, sizeof(tz_name), "%Z", tm)) {
-        /* not enough room or another error */
-        tz_name[0] = '\0';
-    }
-
-    TRACE("tz data will be valid through year %d, bias %d\n", tm->tm_year + 1900, bias);
     current_year = tm->tm_year;
     current_bias = bias;
+    tm1 = tm2 = *tm;
+    tm1.tm_isdst = 0;
+    tm2.tm_isdst = 1;
+    inverted_dst = mktime(&tm1) < mktime(&tm2);
+    if (inverted_dst) bias += 60;
+
+    memset(tzi, 0, sizeof(*tzi));
+    TRACE("tz data will be valid through year %d, bias %d, inverted_dst %d\n", tm->tm_year + 1900, bias, inverted_dst);
 
     tzi->Bias = bias;
 
-    tm->tm_isdst = 0;
+    tm->tm_isdst = inverted_dst;
     tm->tm_mday = 1;
     tm->tm_mon = tm->tm_hour = tm->tm_min = tm->tm_sec = tm->tm_wday = tm->tm_yday = 0;
     year_start = mktime(tm);
     TRACE("year_start: %s", ctime(&year_start));
 
+    tm->tm_isdst = inverted_dst;
     tm->tm_mday = tm->tm_wday = tm->tm_yday = 0;
     tm->tm_mon = 12;
     tm->tm_hour = 23;
@@ -2972,12 +3151,14 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
     TRACE("year_end: %s", ctime(&year_end));
 
     tmp = find_dst_change(year_start, year_end, &is_dst);
+    if (inverted_dst) is_dst = !is_dst;
     if (is_dst)
         dlt = tmp;
     else
         std = tmp;
 
     tmp = find_dst_change(tmp, year_end, &is_dst);
+    if (inverted_dst) is_dst = !is_dst;
     if (is_dst)
         dlt = tmp;
     else
@@ -3033,27 +3214,21 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
             tzi->StandardBias);
     }
 
-    find_reg_tz_info(tzi, tz_name, current_year + 1900);
+    if (get_system_config_tz_info( &reg_tzi, current_year + 1900 ))
+    {
+        if (match_tz_info( tzi, &reg_tzi ))
+        {
+            cached_tzi = *tzi = reg_tzi;
+            mutex_unlock( &timezone_mutex );
+            return;
+        }
+        WARN( "System config TZ info didn't match guessed parameters, falling back to search.\n" );
+    }
+    find_reg_tz_info(tzi, current_year + 1900);
     cached_tzi = *tzi;
     mutex_unlock( &timezone_mutex );
 }
 
-
-static void read_dev_urandom( void *buf, ULONG len )
-{
-    int fd = open( "/dev/urandom", O_RDONLY );
-    if (fd != -1)
-    {
-        int ret;
-        do
-        {
-            ret = read( fd, buf, len );
-        }
-        while (ret == -1 && errno == EINTR);
-        close( fd );
-    }
-    else WARN( "can't open /dev/urandom\n" );
-}
 
 static unsigned int get_system_process_info( SYSTEM_INFORMATION_CLASS class, void *info, ULONG size, ULONG *len )
 {
@@ -3147,8 +3322,7 @@ C_ASSERT( sizeof(struct process_info) <= sizeof(SYSTEM_PROCESS_INFORMATION) );
             {
                 ti = (SYSTEM_EXTENDED_THREAD_INFORMATION *)((BYTE *)nt_process->ti + j * thread_info_size);
                 ti->ThreadInfo.CreateTime.QuadPart = server_thread->start_time;
-                ti->ThreadInfo.ClientId.UniqueProcess = UlongToHandle(server_process->pid);
-                ti->ThreadInfo.ClientId.UniqueThread = UlongToHandle(server_thread->tid);
+                ti->ThreadInfo.ClientId = make_client_id( server_process->pid, server_thread->tid );
                 ti->ThreadInfo.dwCurrentPriority = server_thread->current_priority;
                 ti->ThreadInfo.dwBasePriority = server_thread->base_priority;
                 get_thread_times( server_process->unix_pid, server_thread->unix_tid,
@@ -3245,27 +3419,10 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
 
     case SystemTimeOfDayInformation:  /* 3 */
     {
-        static LONGLONG last_bias;
-        static time_t last_utc;
-        struct tm *tm;
-        time_t utc;
         SYSTEM_TIMEOFDAY_INFORMATION sti = {{{ 0 }}};
 
         sti.BootTime.QuadPart = server_start_time;
-
-        utc = time( NULL );
-        pthread_mutex_lock( &timezone_mutex );
-        if (utc != last_utc)
-        {
-            last_utc = utc;
-            tm = gmtime( &utc );
-            last_bias = mktime( tm ) - utc;
-            tm = localtime( &utc );
-            if (tm->tm_isdst) last_bias -= 3600;
-            last_bias *= TICKSPERSEC;
-        }
-        sti.TimeZoneBias.QuadPart = last_bias;
-        pthread_mutex_unlock( &timezone_mutex );
+        sti.TimeZoneBias.QuadPart = get_current_tz_bias();
 
         NtQuerySystemTime( &sti.SystemTime );
 
@@ -3523,21 +3680,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
         if (size >= len)
         {
             if (!info) ret = STATUS_ACCESS_VIOLATION;
-            else
-            {
-#ifdef HAVE_GETRANDOM
-                int ret;
-                do
-                {
-                    ret = getrandom( info, len, 0 );
-                }
-                while (ret == -1 && errno == EINTR);
-
-                if (ret == -1 && errno == ENOSYS) read_dev_urandom( info, len );
-#else
-                read_dev_urandom( info, len );
-#endif
-            }
+            else get_random( info, len );
         }
         else ret = STATUS_INFO_LENGTH_MISMATCH;
         break;
@@ -4055,11 +4198,14 @@ NTSTATUS WINAPI NtQuerySystemInformationEx( SYSTEM_INFORMATION_CLASS class,
     }
 
     case SystemSupportedProcessorArchitectures:
+    case SystemSupportedProcessorArchitectures2:
     {
         SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION *machines = info;
         HANDLE process;
         ULONG i;
         USHORT machine = 0;
+        USHORT machines_to_return[8];
+        unsigned int machines_to_return_count = 0;
 
         if (!query || query_len < sizeof(HANDLE)) return STATUS_INVALID_PARAMETER;
         process = *(HANDLE *)query;
@@ -4074,7 +4220,18 @@ NTSTATUS WINAPI NtQuerySystemInformationEx( SYSTEM_INFORMATION_CLASS class,
             if (ret) return ret;
         }
 
-        len = (supported_machines_count + 1) * sizeof(*machines);
+        for (i = 0; i < supported_machines_count; i++)
+        {
+#ifdef __aarch64__
+            if (class == SystemSupportedProcessorArchitectures &&
+                supported_machines[i] == IMAGE_FILE_MACHINE_AMD64)
+                continue;
+#endif
+            machines_to_return[machines_to_return_count] = supported_machines[i];
+            machines_to_return_count++;
+        }
+
+        len = (machines_to_return_count + 1) * sizeof(*machines);
         if (size < len)
         {
             ret = STATUS_BUFFER_TOO_SMALL;
@@ -4095,20 +4252,23 @@ NTSTATUS WINAPI NtQuerySystemInformationEx( SYSTEM_INFORMATION_CLASS class,
         }
 
         /* native machine */
-        machines[0].Machine = supported_machines[0];
+        machines[0].Machine = machines_to_return[0];
         machines[0].UserMode = 1;
         machines[0].KernelMode = 1;
         machines[0].Native = 1;
-        machines[0].Process = (supported_machines[0] == machine || is_machine_64bit( machine ));
+        machines[0].Process = (machines_to_return[0] == machine ||
+                               (class == SystemSupportedProcessorArchitectures &&
+                                machine == IMAGE_FILE_MACHINE_AMD64));
         machines[0].WoW64Container = 0;
         machines[0].ReservedZero0 = 0;
-        /* wow64 machines */
-        for (i = 1; i < supported_machines_count; i++)
+        /* other machines */
+        for (i = 1; i < machines_to_return_count; i++)
         {
-            machines[i].Machine = supported_machines[i];
+            machines[i].Machine = machines_to_return[i];
             machines[i].UserMode = 1;
-            machines[i].Process = supported_machines[i] == machine;
-            machines[i].WoW64Container = 1;
+            machines[i].Process = machines_to_return[i] == machine;
+            if (!is_machine_64bit( machines_to_return[i] ))
+                machines[i].WoW64Container = 1;
         }
 
         ret = STATUS_SUCCESS;

@@ -67,13 +67,10 @@ static NTSTATUS (WINAPI *pNtWriteFile)(HANDLE hFile, HANDLE hEvent,
                                        PIO_STATUS_BLOCK io_status,
                                        const void* buffer, ULONG length,
                                        PLARGE_INTEGER offset, PULONG key);
-static NTSTATUS (WINAPI *pNtCancelIoFile)(HANDLE hFile, PIO_STATUS_BLOCK io_status);
-static NTSTATUS (WINAPI *pNtCancelIoFileEx)(HANDLE hFile, PIO_STATUS_BLOCK iosb, PIO_STATUS_BLOCK io_status);
 static NTSTATUS (WINAPI *pNtClose)( PHANDLE );
 static NTSTATUS (WINAPI *pNtFsControlFile) (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc_context, PIO_STATUS_BLOCK io, ULONG code, PVOID in_buffer, ULONG in_size, PVOID out_buffer, ULONG out_size);
 
 static NTSTATUS (WINAPI *pNtCreateIoCompletion)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG);
-static NTSTATUS (WINAPI *pNtOpenIoCompletion)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
 static NTSTATUS (WINAPI *pNtQueryIoCompletion)(HANDLE, IO_COMPLETION_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 static NTSTATUS (WINAPI *pNtRemoveIoCompletion)(HANDLE, PULONG_PTR, PULONG_PTR, PIO_STATUS_BLOCK, PLARGE_INTEGER);
 static NTSTATUS (WINAPI *pNtRemoveIoCompletionEx)(HANDLE,FILE_IO_COMPLETION_INFORMATION*,ULONG,ULONG*,LARGE_INTEGER*,BOOLEAN);
@@ -1425,14 +1422,17 @@ static void test_file_full_size_information(void)
         "[ffsie] TotalAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
         wine_dbgstr_longlong(ffsi.TotalAllocationUnits.QuadPart),
         wine_dbgstr_longlong(ffsie.ActualTotalAllocationUnits));
-    ok(ffsie.CallerAvailableAllocationUnits == ffsi.CallerAvailableAllocationUnits.QuadPart,
-        "[ffsie] CallerAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
-        wine_dbgstr_longlong(ffsi.CallerAvailableAllocationUnits.QuadPart),
-        wine_dbgstr_longlong(ffsie.CallerAvailableAllocationUnits));
-    ok(ffsie.ActualAvailableAllocationUnits == ffsi.ActualAvailableAllocationUnits.QuadPart,
-        "[ffsie] ActualAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
-        wine_dbgstr_longlong(ffsi.ActualAvailableAllocationUnits.QuadPart),
-        wine_dbgstr_longlong(ffsie.ActualAvailableAllocationUnits));
+    flaky  /* available disk space can change outside of our control */
+    {
+        ok(ffsie.CallerAvailableAllocationUnits == ffsi.CallerAvailableAllocationUnits.QuadPart,
+           "[ffsie] CallerAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
+           wine_dbgstr_longlong(ffsi.CallerAvailableAllocationUnits.QuadPart),
+           wine_dbgstr_longlong(ffsie.CallerAvailableAllocationUnits));
+        ok(ffsie.ActualAvailableAllocationUnits == ffsi.ActualAvailableAllocationUnits.QuadPart,
+           "[ffsie] ActualAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
+           wine_dbgstr_longlong(ffsi.ActualAvailableAllocationUnits.QuadPart),
+           wine_dbgstr_longlong(ffsie.ActualAvailableAllocationUnits));
+    }
 
     /* Assume file system is NTFS */
     ok(ffsie.BytesPerSector == 512, "[ffsie] BytesPerSector expected 512, got %ld\n",ffsie.BytesPerSector);
@@ -4798,11 +4798,15 @@ static void test_query_volume_information_file(void)
     NTSTATUS status;
     HANDLE dir;
     WCHAR path[MAX_PATH];
+    WCHAR drives[MAX_PATH];
+    WCHAR *drive;
+    WCHAR sysdrive[4];
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK io;
     UNICODE_STRING nameW;
     FILE_FS_VOLUME_INFORMATION *ffvi;
     BYTE buf[sizeof(FILE_FS_VOLUME_INFORMATION) + MAX_PATH * sizeof(WCHAR)];
+    DWORD count;
 
     GetWindowsDirectoryW( path, MAX_PATH );
     pRtlDosPathNameToNtPathName_U( path, &nameW, NULL, NULL );
@@ -4836,6 +4840,50 @@ static void test_query_volume_information_file(void)
     trace("VolumeSerialNumber: %lx VolumeLabelName: %s\n", ffvi->VolumeSerialNumber, wine_dbgstr_w(ffvi->VolumeLabel));
 
     CloseHandle( dir );
+
+    GetSystemDirectoryW( sysdrive, ARRAY_SIZE(sysdrive) );
+    count = GetLogicalDriveStringsW( ARRAY_SIZE(drives), drives );
+    ok( count && count < ARRAY_SIZE(drives), "GetLogicalDriveStringsW returned %lu\n", count );
+
+    for (drive = drives; *drive; drive += lstrlenW(drive) + 1)
+    {
+        UINT type = GetDriveTypeW( drive );
+        HANDLE root;
+
+        if ((drive[0] | 0x20) == (sysdrive[0] | 0x20)) continue;
+        if (type != DRIVE_FIXED && type != DRIVE_REMOTE && type != DRIVE_RAMDISK)
+            continue;
+
+        root = CreateFileW( drive, 0, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL,
+                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL );
+        if (root == INVALID_HANDLE_VALUE)
+        {
+            skip( "cannot open %s: %lu\n", wine_dbgstr_w(drive), GetLastError() );
+            continue;
+        }
+
+        ZeroMemory( buf, sizeof(buf) );
+        io.Status = 0xdadadada;
+        io.Information = 0xcacacaca;
+
+        status = pNtQueryVolumeInformationFile( root, &io, buf, sizeof(buf),
+                                                FileFsVolumeInformation );
+        ok( status == STATUS_SUCCESS,
+            "NtQueryVolumeInformationFile(FileFsVolumeInformation) on %s returned %lx\n",
+            wine_dbgstr_w(drive), status );
+        ok( io.Status == STATUS_SUCCESS,
+            "io.Status on %s is %lx\n", wine_dbgstr_w(drive), io.Status );
+        if (status == STATUS_SUCCESS)
+        {
+            ok( io.Information == (FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel)
+                                   + ffvi->VolumeLabelLength),
+                "expected %ld, got %Iu on %s\n",
+                (FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel) + ffvi->VolumeLabelLength),
+                io.Information, wine_dbgstr_w(drive) );
+        }
+
+        CloseHandle( root );
+    }
 }
 
 static void test_query_attribute_information_file(void)
@@ -4870,6 +4918,8 @@ static void test_query_attribute_information_file(void)
     ok(ffai->FileSystemAttributes != 0, "Missing FileSystemAttributes\n");
     ok(ffai->MaximumComponentNameLength != 0, "Missing MaximumComponentNameLength\n");
     ok(ffai->FileSystemNameLength != 0, "Missing FileSystemNameLength\n");
+    ok(ffai->FileSystemAttributes & FILE_SUPPORTS_OPEN_BY_FILE_ID,
+            "expected FILE_SUPPORTS_OPEN_BY_FILE_ID to be set, got %#lx\n", ffai->FileSystemAttributes);
 
     trace("FileSystemAttributes: %lx MaximumComponentNameLength: %lx FileSystemName: %s\n",
           ffai->FileSystemAttributes, ffai->MaximumComponentNameLength,
@@ -7113,6 +7163,31 @@ static void test_reparse_points(void)
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
     ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
 
+    NtClose( handle );
+
+    /* Test a link that unwinds past the directory the link is in. */
+
+    RtlInitUnicodeString( &nameW, L"testreparse_dir\\file" );
+    status = NtCreateFile( &handle, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, NULL, 0 );
+    ok( !status, "got %#lx\n", status );
+
+    swprintf( path, ARRAY_SIZE(path), L"..\\testreparse_file", temp_path );
+    data_size = init_reparse_symlink( &data, path, SYMLINK_FLAG_RELATIVE );
+    status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
+    ok( !status, "got %#lx\n", status );
+
+    status = NtOpenFile( &handle2, GENERIC_READ | SYNCHRONIZE, &attr, &io, 0, FILE_SYNCHRONOUS_IO_NONALERT );
+    ok( !status, "got %#lx\n", status );
+
+    ret = ReadFile( handle2, buffer, sizeof(buffer), &size, NULL );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
+    todo_wine ok( size == 5, "got size %lu\n", size );
+    ok( !memcmp( buffer, "file2", size ), "got data %s\n", debugstr_an( buffer, size ));
+
+    NtClose( handle2 );
+    NtClose( handle );
+
     /* Create an absolute symlink. */
 
     RtlInitUnicodeString( &nameW, L"testreparse_dirlink" );
@@ -7362,12 +7437,9 @@ START_TEST(file)
     pNtDeleteFile           = (void *)GetProcAddress(hntdll, "NtDeleteFile");
     pNtReadFile             = (void *)GetProcAddress(hntdll, "NtReadFile");
     pNtWriteFile            = (void *)GetProcAddress(hntdll, "NtWriteFile");
-    pNtCancelIoFile         = (void *)GetProcAddress(hntdll, "NtCancelIoFile");
-    pNtCancelIoFileEx       = (void *)GetProcAddress(hntdll, "NtCancelIoFileEx");
     pNtClose                = (void *)GetProcAddress(hntdll, "NtClose");
     pNtFsControlFile        = (void *)GetProcAddress(hntdll, "NtFsControlFile");
     pNtCreateIoCompletion   = (void *)GetProcAddress(hntdll, "NtCreateIoCompletion");
-    pNtOpenIoCompletion     = (void *)GetProcAddress(hntdll, "NtOpenIoCompletion");
     pNtQueryIoCompletion    = (void *)GetProcAddress(hntdll, "NtQueryIoCompletion");
     pNtRemoveIoCompletion   = (void *)GetProcAddress(hntdll, "NtRemoveIoCompletion");
     pNtRemoveIoCompletionEx = (void *)GetProcAddress(hntdll, "NtRemoveIoCompletionEx");

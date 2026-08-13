@@ -29,7 +29,6 @@
 #include <pthread.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "ntuser.h"
@@ -579,8 +578,8 @@ BOOL WINAPI NtUserSetThreadDesktop( HDESK handle )
         struct session_thread_data *data = get_session_thread_data();
         data->shared_desktop = find_shared_session_object( locator.id, locator.offset );
         memset( &data->shared_foreground, 0, sizeof(data->shared_foreground) );
-        thread_info->client_info.top_window = 0;
-        thread_info->client_info.msg_window = 0;
+        thread_info->top_window = 0;
+        thread_info->msg_window = 0;
         if (was_virtual_desktop != is_virtual_desktop()) update_display_cache( TRUE );
     }
     return ret;
@@ -790,10 +789,10 @@ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiB
 
 HWND get_desktop_window(void)
 {
-    struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
+    struct user_thread_info *thread_info = get_user_thread_info();
     BOOL is_service;
 
-    if (thread_info->top_window) return UlongToHandle( thread_info->top_window );
+    if (thread_info->top_window) return thread_info->top_window;
 
     /* don't create an actual explorer desktop window for services */
     is_service = is_service_process();
@@ -803,8 +802,8 @@ HWND get_desktop_window(void)
         req->force = is_service;
         if (!wine_server_call( req ))
         {
-            thread_info->top_window = reply->top_window;
-            thread_info->msg_window = reply->msg_window;
+            thread_info->top_window = wine_server_ptr_handle( reply->top_window );
+            thread_info->msg_window = wine_server_ptr_handle( reply->msg_window );
         }
     }
     SERVER_END_REQ;
@@ -822,7 +821,7 @@ HWND get_desktop_window(void)
         PS_ATTRIBUTE_LIST ps_attr;
         PS_CREATE_INFO create_info;
         WCHAR desktop[MAX_PATH];
-        PEB *peb = NtCurrentTeb()->Peb;
+        PEB *peb = RtlGetCurrentPeb();
         HANDLE process, thread;
         unsigned int status;
 
@@ -885,18 +884,17 @@ HWND get_desktop_window(void)
             req->force = 1;
             if (!wine_server_call( req ))
             {
-                thread_info->top_window = reply->top_window;
-                thread_info->msg_window = reply->msg_window;
+                thread_info->top_window = wine_server_ptr_handle( reply->top_window );
+                thread_info->msg_window = wine_server_ptr_handle( reply->msg_window );
             }
         }
         SERVER_END_REQ;
     }
-
     if (!thread_info->top_window) ERR_(win)( "failed to create desktop window\n" );
-    else user_driver->pSetDesktopWindow( UlongToHandle( thread_info->top_window ));
+    else user_driver->pSetDesktopWindow( thread_info->top_window );
 
     register_builtin_classes();
-    return UlongToHandle( thread_info->top_window );
+    return thread_info->top_window;
 }
 
 static HANDLE get_winstations_dir_handle(void)
@@ -908,7 +906,7 @@ static HANDLE get_winstations_dir_handle(void)
     NTSTATUS status;
     HANDLE dir;
 
-    snprintf( bufferA, sizeof(bufferA), "\\Sessions\\%u\\Windows\\WindowStations", NtCurrentTeb()->Peb->SessionId );
+    snprintf( bufferA, sizeof(bufferA), "\\Sessions\\%u\\Windows\\WindowStations", RtlGetCurrentPeb()->SessionId );
     str.Buffer = buffer;
     str.MaximumLength = asciiz_to_unicode( buffer, bufferA );
     str.Length = str.MaximumLength - sizeof(WCHAR);
@@ -924,7 +922,7 @@ static HANDLE get_winstations_dir_handle(void)
  */
 static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
 {
-    const WCHAR *p, *appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+    const WCHAR *p, *appname = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
     KEY_VALUE_PARTIAL_INFORMATION *info = buf;
     WCHAR *buffer = buf;
     HKEY tmpkey, appkey;
@@ -970,7 +968,7 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
  */
 void winstation_init(void)
 {
-    RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+    RTL_USER_PROCESS_PARAMETERS *params = RtlGetCurrentPeb()->ProcessParameters;
     WCHAR *winstation = NULL, *desktop = NULL, *buffer = NULL;
     HANDLE handle, dir = NULL;
     OBJECT_ATTRIBUTES attr;

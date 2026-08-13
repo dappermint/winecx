@@ -23,7 +23,6 @@
 #include <limits.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnls.h"
@@ -1152,12 +1151,15 @@ BOOL WINAPI DECLSPEC_HOTPATCH ConvertFiberToThread(void)
 {
     struct fiber_data *fiber = NtCurrentTeb()->Tib.FiberData;
 
-    if (fiber)
+    if (!NtCurrentTeb()->HasFiberData)
     {
-        relocate_thread_actctx_stack( &NtCurrentTeb()->ActivationContextStack );
-        NtCurrentTeb()->Tib.FiberData = NULL;
-        HeapFree( GetProcessHeap(), 0, fiber );
+        SetLastError( ERROR_ALREADY_THREAD );
+        return FALSE;
     }
+    relocate_thread_actctx_stack( &NtCurrentTeb()->ActivationContextStack );
+    NtCurrentTeb()->Tib.FiberData = NULL;
+    NtCurrentTeb()->HasFiberData = FALSE;
+    HeapFree( GetProcessHeap(), 0, fiber );
     return TRUE;
 }
 
@@ -1178,7 +1180,7 @@ LPVOID WINAPI DECLSPEC_HOTPATCH ConvertThreadToFiberEx( LPVOID param, DWORD flag
 {
     struct fiber_data *fiber;
 
-    if (NtCurrentTeb()->Tib.FiberData)
+    if (NtCurrentTeb()->HasFiberData)
     {
         /* CrossOver hack for bug 20987 */
         static int is_halo_mcc = -1;
@@ -1218,6 +1220,7 @@ LPVOID WINAPI DECLSPEC_HOTPATCH ConvertThreadToFiberEx( LPVOID param, DWORD flag
     fiber->fls_slots        = NtCurrentTeb()->FlsSlots;
     relocate_thread_actctx_stack( &fiber->actctx.stack_space );
     NtCurrentTeb()->Tib.FiberData = fiber;
+    NtCurrentTeb()->HasFiberData = TRUE;
     return fiber;
 }
 
@@ -1248,7 +1251,7 @@ void WINAPI DECLSPEC_HOTPATCH DeleteFiber( LPVOID fiber_ptr )
  */
 BOOL WINAPI DECLSPEC_HOTPATCH IsThreadAFiber(void)
 {
-    return NtCurrentTeb()->Tib.FiberData != NULL;
+    return NtCurrentTeb()->HasFiberData;
 }
 
 

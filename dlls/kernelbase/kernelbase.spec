@@ -569,7 +569,7 @@
 @ stdcall GetGeoInfoEx(ptr long ptr long)
 @ stdcall GetHandleInformation(long ptr)
 # @ stub GetHivePath
-# @ stub GetIntegratedDisplaySize
+@ stdcall GetIntegratedDisplaySize(ptr)
 # @ stub GetIsEdpEnabled
 @ stdcall GetKernelObjectSecurity(long long ptr long ptr)
 @ stdcall GetLargePageMinimum()
@@ -587,6 +587,7 @@
 @ stdcall GetLogicalProcessorInformationEx(long ptr ptr)
 @ stdcall GetLongPathNameA(str ptr long)
 @ stdcall GetLongPathNameW(wstr ptr long)
+@ stdcall GetMachineTypeAttributes(long ptr)
 @ stdcall GetMappedFileNameA(long ptr ptr long)
 @ stdcall GetMappedFileNameW(long ptr ptr long)
 # @ stub GetMemoryErrorHandlingCapabilities
@@ -1220,10 +1221,10 @@
 # @ stub PsmIsChildKey
 # @ stub PsmIsDynamicKey
 # @ stub PsmIsValidKey
-# @ stub PssCaptureSnapshot
+@ stdcall PssCaptureSnapshot(ptr long long ptr)
 # @ stub PssDuplicateSnapshot
-# @ stub PssFreeSnapshot
-# @ stub PssQuerySnapshot
+@ stdcall PssFreeSnapshot(ptr ptr)
+@ stdcall PssQuerySnapshot(ptr long ptr long)
 # @ stub PssWalkMarkerCreate
 # @ stub PssWalkMarkerFree
 # @ stub PssWalkMarkerGetPosition

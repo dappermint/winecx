@@ -675,18 +675,29 @@ rem call :setError 666 & (start /B I\dont\exist.exe &&echo SUCCESS !errorlevel!|
 rem can't run this test, generates a nice popup under windows
 call :setError 666 & (start "" /B /WAIT cmd.exe /c "echo foo & exit /b 1024" &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & (start "" /B cmd.exe /c "(choice /C:YN /T:3 /D:Y > NUL) & exit /b 1024" &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+mkdir foo & cd foo
+set "FOO_PATH=%cd%" > NUL
+cd ..
+call :setError 666 & (start /B /WAIT /d "%FOO_PATH%" cmd /s /c "if /I \"%%cd%%\"==\"%FOO_PATH%\" (exit 0) else (exit 1)" >nul &&echo !errorlevel!)
+rd /q /s foo
 echo --- success/failure for TYPE command
 mkdir foo & cd foo
+mkdir bar
+mkdir spam
 echo a > fileA
 echo b > fileB
 call :setError 666 & (type &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & (type NUL &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & (type i\dont\exist\at\all.txt &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
-call :setError 666 & (type file* i\dont\exist\at\all.txt &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 echo ---
-call :setError 666 & (type i\dont\exist\at\all.txt file* &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
-cd .. && rd /q /s foo
-
+call :setError 666 & (type file* i\dont\exist\at\all.txt &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & (type file* idontexistatall.txt &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & (type idontexistatall.txt file* &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & (type i\dont\exist\at\all.txt file*&&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+cd ..
+del foo\file*
+call :setError 666 & (type foo\* &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+rd /q /s foo
 echo --- success/failure for COPY command
 mkdir foo & cd foo
 echo a > fileA
@@ -773,6 +784,7 @@ call :setError 666 & (pushd abc &&echo SUCCESS !errorlevel!||echo FAILURE !error
 call :setError 666 & (pushd abc &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & (popd abc &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & (popd &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & (pushd "abc/"&&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 call :setError 666 & popd & echo ERRORLEVEL !errorlevel!
 cd .. && rd /q /s foo
 
@@ -1304,6 +1316,16 @@ setlocal EnableDelayedExpansion
 set "AFTER_DELAY=after^!"
 echo !BEFORE_DELAY!
 echo !AFTER_DELAY!
+rem caret escape inside quotes:
+set "b=caret^!bang"
+echo !b!
+setlocal DisableDelayedExpansion
+setlocal EnableDelayedExpansion
+set "a=hello"
+echo ^^!a!
+echo !a^!
+echo ^^^^!a!
+echo !a^^!
 setlocal DisableDelayedExpansion
 
 echo --- in digit variables
@@ -2044,8 +2066,10 @@ mkdir bar
 mkdir baz
 mkdir pop
 echo > bazbaz
+echo > notbaz
 echo --- basic wildcards
 for %%i in (ba*) do echo %%i
+for %%i in ("ba*" "ba?baz" "notbaz") do echo %%i
 echo --- wildcards in subdirs
 echo something>pop\bar1
 echo something>pop\bar2.txt
@@ -4468,6 +4492,23 @@ rem cleanup
 echo ---
 del run.cmd
 del ovr.cmd
+echo ------------ Testing short path modifier ------------
+mkdir TestLongDirForShort >nul 2>&1
+echo test > TestLongDirForShort\TestLongFileForShort.txt
+for %%P in ("%CD%\TestLongDirForShort\TestLongFileForShort.txt") do (
+  echo %%~snP | findstr "~" >nul
+  if errorlevel 1 (echo short name: filename NOT shortened) else (echo short name: filename shortened)
+)
+for %%P in ("%CD%\TestLongDirForShort\NonExistent") do (
+  echo %%~sP | findstr "NonExistent" >nul
+  if errorlevel 1 (echo short path: non-existent last NOT preserved) else (echo short path: non-existent last preserved)
+)
+for %%P in ("%CD%\TestLongDirForShort\NonExistentMid\AlsoNonExistent") do (
+  echo %%~sP | findstr "AlsoNonExistent" >nul
+  if errorlevel 1 (echo short path: beyond missing NOT preserved) else (echo short path: beyond missing preserved)
+)
+del TestLongDirForShort\TestLongFileForShort.txt 2>nul
+rmdir TestLongDirForShort 2>nul
 echo ------------ Testing combined CALLs/GOTOs ------------
 echo @echo off>foo.cmd
 echo goto :eof>>foot.cmd

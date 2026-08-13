@@ -23,7 +23,6 @@
 #include <sys/types.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winioctl.h"
 #include "wine/debug.h"
@@ -959,7 +958,7 @@ ULONG WINAPI RtlGetCurrentDirectory_U(ULONG buflen, LPWSTR buf)
         us = &NtCurrentTeb()->Peb->ProcessParameters->CurrentDirectory.DosPath;
 
     len = us->Length / sizeof(WCHAR);
-    if (us->Buffer[len - 1] == '\\' && us->Buffer[len - 2] != ':')
+    if (len && us->Buffer[len - 1] == '\\' && us->Buffer[len - 2] != ':')
         len--;
 
     if (buflen / sizeof(WCHAR) > len)
@@ -984,34 +983,38 @@ ULONG WINAPI RtlGetCurrentDirectory_U(ULONG buflen, LPWSTR buf)
 NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
 {
     FILE_FS_DEVICE_INFORMATION device_info;
+    HANDLE handle, old_handle;
+    WCHAR cur_path[MAX_PATH];
     OBJECT_ATTRIBUTES attr;
     UNICODE_STRING newdir;
     IO_STATUS_BLOCK io;
     CURDIR *curdir;
-    HANDLE handle;
     NTSTATUS nts;
     ULONG size;
     PWSTR ptr;
 
     newdir.Buffer = NULL;
 
-    RtlAcquirePebLock();
-
-    if (NtCurrentTeb()->Tib.SubSystemTib)  /* FIXME: hack */
-        curdir = &((WIN16_SUBSYSTEM_TIB *)NtCurrentTeb()->Tib.SubSystemTib)->curdir;
-    else
-        curdir = &NtCurrentTeb()->Peb->ProcessParameters->CurrentDirectory;
-
-    if (!RtlDosPathNameToNtPathName_U( dir->Buffer, &newdir, NULL, NULL ))
+    if (RtlGetCurrentDirectory_U( sizeof(cur_path), cur_path ) < sizeof(cur_path))
     {
-        nts = STATUS_OBJECT_NAME_INVALID;
-        goto out;
+        size = wcslen( cur_path ) * sizeof(*cur_path);
+        if (dir->Length == size && !memcmp( dir->Buffer, cur_path, size ))
+        {
+            TRACE( "same directory.\n" );
+            return STATUS_SUCCESS;
+        }
     }
+
+    if (!RtlDosPathNameToNtPathName_U( dir->Buffer, &newdir, NULL, NULL )) return STATUS_OBJECT_NAME_INVALID;
 
     InitializeObjectAttributes( &attr, &newdir, OBJ_CASE_INSENSITIVE, 0, NULL );
     nts = NtOpenFile( &handle, FILE_TRAVERSE | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
                       FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
-    if (nts != STATUS_SUCCESS) goto out;
+    if (nts != STATUS_SUCCESS)
+    {
+        RtlFreeUnicodeString( &newdir );
+        return nts;
+    }
 
     /* don't keep the directory handle open on removable media */
     if (!NtQueryVolumeInformationFile( handle, &io, &device_info,
@@ -1021,9 +1024,6 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
         NtClose( handle );
         handle = 0;
     }
-
-    if (curdir->Handle) NtClose( curdir->Handle );
-    curdir->Handle = handle;
 
     /* append trailing \ if missing */
     size = newdir.Length / sizeof(WCHAR);
@@ -1040,14 +1040,23 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
         *ptr = '\\';
     }
 
+    RtlAcquirePebLock();
+    if (NtCurrentTeb()->Tib.SubSystemTib)  /* FIXME: hack */
+        curdir = &((WIN16_SUBSYSTEM_TIB *)NtCurrentTeb()->Tib.SubSystemTib)->curdir;
+    else
+        curdir = &NtCurrentTeb()->Peb->ProcessParameters->CurrentDirectory;
+
+    old_handle = curdir->Handle;
+    curdir->Handle = handle;
+
     memcpy( curdir->DosPath.Buffer, ptr, size * sizeof(WCHAR));
     curdir->DosPath.Buffer[size] = 0;
     curdir->DosPath.Length = size * sizeof(WCHAR);
+    RtlReleasePebLock();
 
     TRACE( "curdir now %s %p\n", debugstr_w(curdir->DosPath.Buffer), curdir->Handle );
 
- out:
     RtlFreeUnicodeString( &newdir );
-    RtlReleasePebLock();
+    if (old_handle) NtClose( old_handle );
     return nts;
 }

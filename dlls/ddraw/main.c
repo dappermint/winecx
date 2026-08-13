@@ -35,8 +35,6 @@ int use_desktop_hack = 0;
 
 static struct list global_ddraw_list = LIST_INIT(global_ddraw_list);
 
-static HINSTANCE instance;
-
 /* value of ForceRefreshRate */
 DWORD force_refresh_rate = 0;
 
@@ -924,7 +922,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
                 (const WCHAR *)&ddraw_self, &ddraw_self))
             ERR("Failed to get own module handle.\n");
 
-        instance = inst;
         DisableThreadLibraryCalls(inst);
         break;
     }

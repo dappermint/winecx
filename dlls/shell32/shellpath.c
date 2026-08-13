@@ -2094,6 +2094,15 @@ static const CSIDL_DATA CSIDL_Data[] =
         .path       = L"Screenshots",
         .flags      = KFDF_PRECREATE | KFDF_ROAMABLE,
     },
+    { /* 0x75 */
+        .id         = &FOLDERID_AppDataDocuments,
+        .type       = CSIDL_Type_User,
+        .category   = KF_CATEGORY_PERUSER,
+        .name       = L"AppDataDocuments",
+        .parent     = &FOLDERID_LocalAppData,
+        .path       = L"Documents",
+        .flags      = KFDF_PRECREATE | KFDF_ROAMABLE,
+    },
 };
 
 static int csidl_from_id( const KNOWNFOLDERID *id )
@@ -3434,7 +3443,9 @@ static HRESULT set_folder_attributes(void)
         { &CLSID_RecycleBin, FALSE, FALSE, FALSE,
           SFGAO_FOLDER|SFGAO_DROPTARGET|SFGAO_HASPROPSHEET },
         { &CLSID_ControlPanel, FALSE, TRUE, TRUE,
-          SFGAO_FOLDER|SFGAO_HASSUBFOLDER }
+          SFGAO_FOLDER|SFGAO_HASSUBFOLDER },
+        { &CLSID_Printers, FALSE, FALSE, FALSE,
+          SFGAO_FOLDER|SFGAO_CANLINK }
     };
 
     unsigned int i;

@@ -5,8 +5,6 @@ IMPORTLIB = slc
 # CROSSOVER HACK: bug 19782
 PARENTSRC = ../sppc
 
-EXTRADLLFLAGS = -Wb,--prefer-native
-
 SOURCES = \
 	slc.c \
 	sppc.c

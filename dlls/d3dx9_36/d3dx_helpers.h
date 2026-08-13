@@ -242,6 +242,14 @@ enum d3dx_pixel_format_id
 #define D3DX_PIXEL_FORMAT_BC3_UNORM          D3DX_PIXEL_FORMAT_DXT5_UNORM
 
 /* for internal use */
+enum conversion_flag
+{
+    CONV_FLAG_PM_ALPHA_IN  = 0x01,
+    CONV_FLAG_PM_ALPHA_OUT = 0x02,
+    CONV_FLAG_SRGB_IN  = 0x04,
+    CONV_FLAG_SRGB_OUT = 0x08,
+};
+
 enum component_type
 {
     CTYPE_EMPTY,
@@ -264,6 +272,8 @@ enum format_flag
      * equivalent.
      */
     FMT_FLAG_DXGI     = 0x08,
+    /* Formats with premultiplied alpha, i.e DXT2/DXT4. */
+    FMT_FLAG_PM_ALPHA = 0x10,
 };
 
 struct pixel_format_desc {
@@ -457,6 +467,16 @@ struct d3dx_subresource_data
 HRESULT d3dx_create_subresource_data_for_texture(uint32_t width, uint32_t height, uint32_t depth,
         uint32_t mip_levels, uint32_t layer_count, const struct pixel_format_desc *fmt_desc,
         struct d3dx_subresource_data **out_sub_rsrc_data);
+
+/*
+ * File/resource loading helper functions.
+ */
+HRESULT d3dx_load_file(const WCHAR *path, void **data, uint32_t *size);
+HRESULT d3dx_load_resource_init_a(HMODULE module, const char *resource, HRSRC *rsrc);
+HRESULT d3dx_load_resource_init_w(HMODULE module, const WCHAR *resource, HRSRC *rsrc);
+HRESULT d3dx_load_resource(HMODULE module, HRSRC rsrc, void **data, uint32_t *size);
+HRESULT d3dx_load_resource_a(HMODULE module, const char *resource, void **data, uint32_t *size);
+HRESULT d3dx_load_resource_w(HMODULE module, const WCHAR *resource, void **data, uint32_t *size);
 
 /* debug helpers */
 const char *debug_d3dx_image_file_format(enum d3dx_image_file_format format);

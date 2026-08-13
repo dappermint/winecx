@@ -20,7 +20,6 @@
 #define COBJMACROS
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windows.h"
 #include "appmodel.h"
 #include "shlwapi.h"
@@ -635,4 +634,10 @@ HRESULT WINAPI GetAcceptLanguagesW(WCHAR *langbuf, DWORD *buflen)
 
     *buflen = 0;
     return E_NOT_SUFFICIENT_BUFFER;
+}
+
+HRESULT WINAPI GetIntegratedDisplaySize( double *sz_inches )
+{
+    FIXME( "%p stub.\n", sz_inches );
+    return E_NOTIMPL;
 }

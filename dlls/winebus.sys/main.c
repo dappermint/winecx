@@ -23,7 +23,6 @@
 #include <assert.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnls.h"
@@ -47,9 +46,6 @@ DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
 WINE_DEFAULT_DEBUG_CHANNEL(hid);
 
 static DRIVER_OBJECT *driver_obj;
-
-static DEVICE_OBJECT *mouse_obj;
-static DEVICE_OBJECT *keyboard_obj;
 
 /* The root-enumerated device stack. */
 static DEVICE_OBJECT *bus_pdo;
@@ -560,13 +556,8 @@ static BOOL is_hidraw_enabled(WORD vid, WORD pid, const USAGE_AND_PAGE *usages, 
         if (pid == 0x1839) prefer_hidraw = TRUE; /* Fanatec ClubSport Pedals v1/v2 */
         break;
     case 0x231d:
-        /* comes with 128 buttons in the default configuration */
-        if (buttons == 128) prefer_hidraw = TRUE;
-        /* if customized, less than 128 buttons may be shown, decide by PID */
-        if (pid == 0x0200) prefer_hidraw = TRUE; /* VKBsim Gladiator EVO Right Grip */
-        if (pid == 0x0201) prefer_hidraw = TRUE; /* VKBsim Gladiator EVO Left Grip */
-        if (pid == 0x0126) prefer_hidraw = TRUE; /* VKB-Sim Space Gunfighter */
-        if (pid == 0x0127) prefer_hidraw = TRUE; /* VKB-Sim Space Gunfighter L */
+        /* all vkb devices require hidraw, vkb pid & button/axis count are variable by user & modular hardware config */
+        prefer_hidraw = TRUE;
         break;
     case 0x3344:
         /* all VPC devices require hidraw, have variable numbers of axis/buttons, & in many cases
@@ -578,6 +569,16 @@ static BOOL is_hidraw_enabled(WORD vid, WORD pid, const USAGE_AND_PAGE *usages, 
         /* users may have configured button limits, usually 32/50/64 */
         if ((buttons == 32) || (buttons == 50) || (buttons == 64)) prefer_hidraw = TRUE;
         if (pid == 0x2055) prefer_hidraw = TRUE; /* ATMEL/VIRPIL/200325 VPC Throttle MT-50 CM2 */
+        break;
+    case 0x4098:
+        if (pid == 0xbea8) prefer_hidraw = TRUE; /* Winwing Orion Joystick Base Metal 2 */
+        if (pid == 0xbd64) prefer_hidraw = TRUE; /* Winwing Orion Throttle Base II */
+        if (pid == 0xbef0) prefer_hidraw = TRUE; /* Winwing Orion Combat Rudder Pedals */
+        break;
+    case 0x057e:
+        if (pid == 0x057e) prefer_hidraw = TRUE; /* Joy-Con L */
+        if (pid == 0x2007) prefer_hidraw = TRUE; /* Joy-Con R */
+        if (pid == 0x2009) prefer_hidraw = TRUE; /* Pro Controller */
         break;
     }
 
@@ -819,7 +820,7 @@ static void mouse_device_create(void)
     struct device_create_params params = {{0}};
 
     if (winebus_call(mouse_create, &params)) return;
-    mouse_obj = bus_create_hid_device(&params.desc, params.device);
+    bus_create_hid_device(&params.desc, params.device);
     IoInvalidateDeviceRelations(bus_pdo, BusRelations);
 }
 
@@ -828,7 +829,7 @@ static void keyboard_device_create(void)
     struct device_create_params params = {{0}};
 
     if (winebus_call(keyboard_create, &params)) return;
-    keyboard_obj = bus_create_hid_device(&params.desc, params.device);
+    bus_create_hid_device(&params.desc, params.device);
     IoInvalidateDeviceRelations(bus_pdo, BusRelations);
 }
 

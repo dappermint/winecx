@@ -99,9 +99,11 @@ static VOID      (WINAPI  *pRtlMoveMemory)(LPVOID,LPCVOID,SIZE_T);
 static VOID      (WINAPI  *pRtlFillMemory)(LPVOID,SIZE_T,BYTE);
 static VOID      (WINAPI  *pRtlFillMemoryUlong)(LPVOID,SIZE_T,ULONG);
 static VOID      (WINAPI  *pRtlZeroMemory)(LPVOID,SIZE_T);
+#ifdef __i386__
 static USHORT    (FASTCALL *pRtlUshortByteSwap)(USHORT source);
 static ULONG     (FASTCALL *pRtlUlongByteSwap)(ULONG source);
 static ULONGLONG (FASTCALL *pRtlUlonglongByteSwap)(ULONGLONG source);
+#endif
 static void *    (WINAPI *pRtlGetElementGenericTable)(PRTL_GENERIC_TABLE, ULONG);
 static DWORD     (WINAPI *pRtlGetThreadErrorMode)(void);
 static NTSTATUS  (WINAPI *pRtlSetThreadErrorMode)(DWORD, LPDWORD);
@@ -173,9 +175,11 @@ static void InitFunctionPtrs(void)
 	pRtlFillMemory = (void *)GetProcAddress(hntdll, "RtlFillMemory");
 	pRtlFillMemoryUlong = (void *)GetProcAddress(hntdll, "RtlFillMemoryUlong");
 	pRtlZeroMemory = (void *)GetProcAddress(hntdll, "RtlZeroMemory");
+#ifdef __i386__
         pRtlUshortByteSwap = (void *)GetProcAddress(hntdll, "RtlUshortByteSwap");
         pRtlUlongByteSwap = (void *)GetProcAddress(hntdll, "RtlUlongByteSwap");
         pRtlUlonglongByteSwap = (void *)GetProcAddress(hntdll, "RtlUlonglongByteSwap");
+#endif
         pRtlGetElementGenericTable = (void *)GetProcAddress(hntdll, "RtlGetElementGenericTable");
         pRtlGetThreadErrorMode = (void *)GetProcAddress(hntdll, "RtlGetThreadErrorMode");
         pRtlSetThreadErrorMode = (void *)GetProcAddress(hntdll, "RtlSetThreadErrorMode");
@@ -426,7 +430,7 @@ static void test_RtlByteSwap(void)
     ULONG     lresult;
     USHORT    sresult;
 
-#ifdef _WIN64
+#ifndef __i386__
     /* the Rtl*ByteSwap() are always inlined and not exported from ntdll on 64bit */
     sresult = RtlUshortByteSwap( 0x1234 );
     ok( 0x3412 == sresult,
@@ -5476,6 +5480,69 @@ static void test_RtlDeriveCapabilitySidsFromName(void)
     free( group_sid );
 }
 
+static ULONG_PTR rotate_bits_right( ULONG_PTR v, ULONG count )
+{
+    static const unsigned int bits = sizeof(v) * 8;
+
+    count %= bits;
+    return (v >> count) | (v << ((bits - count) % bits));
+}
+
+static ULONG_PTR rotate_bits_left( ULONG_PTR v, ULONG count )
+{
+    static const unsigned int bits = sizeof(v) * 8;
+
+    count %= bits;
+    return (v << count) | (v >> ((bits - count) % bits));
+}
+
+static ULONG process_cookie;
+
+static void *encode_pointer( void *ptr )
+{
+    DWORD_PTR ptrval = (DWORD_PTR)ptr;
+    return (void *)rotate_bits_right( ptrval ^ process_cookie, process_cookie );
+}
+
+static void *decode_pointer( void *ptr )
+{
+    DWORD_PTR ptrval = (DWORD_PTR)ptr;
+    return (void *)(rotate_bits_left( ptrval, process_cookie ) ^ process_cookie );
+}
+
+static void test_pointer_encoding(void)
+{
+    void *v, *expected;
+
+    if (NtQueryInformationProcess( GetCurrentProcess(), ProcessCookie, &process_cookie, sizeof(process_cookie), NULL ))
+    {
+        win_skip( "Could not get process cookie, skipping tests.\n" );
+        return;
+    }
+    ok( process_cookie, "got 0.\n" );
+
+    v = RtlEncodePointer( NULL );
+    expected = encode_pointer( NULL );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+    v = RtlDecodePointer( v );
+    expected = decode_pointer( expected );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+
+    v = RtlEncodePointer( (void *)(ULONG_PTR)1 );
+    expected = encode_pointer( (void *)(ULONG_PTR)1 );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+    v = RtlDecodePointer( v );
+    expected = decode_pointer( expected );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+
+    v = RtlEncodePointer( (void *)(ULONG_PTR)0xdeadbeeffeedcafe );
+    expected = encode_pointer( (void *)(ULONG_PTR)0xdeadbeeffeedcafe );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+    v = RtlDecodePointer( v );
+    expected = decode_pointer( expected );
+    ok( v == expected, "got %p, expected %p.\n", v, expected );
+}
+
 START_TEST(rtl)
 {
     InitFunctionPtrs();
@@ -5546,4 +5613,5 @@ START_TEST(rtl)
     test_RtlGetElementGenericTable();
     test_RtlCreateServiceSid();
     test_RtlDeriveCapabilitySidsFromName();
+    test_pointer_encoding();
 }

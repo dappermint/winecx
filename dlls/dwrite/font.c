@@ -4683,7 +4683,7 @@ HRESULT create_font_collection(IDWriteFactory7 *factory, IDWriteFontFileEnumerat
     struct list scannedfiles;
     IDWriteFontSetBuilder1 *builder;
     IDWriteFontSet *fontset = NULL;
-    BOOL current;
+    BOOL current = FALSE;
     HRESULT hr;
 
     *ret = NULL;
@@ -4699,6 +4699,8 @@ HRESULT create_font_collection(IDWriteFactory7 *factory, IDWriteFontFileEnumerat
     {
         IDWriteFontFile *file;
         BOOL same = FALSE;
+
+        current = FALSE;
 
         hr = IDWriteFontFileEnumerator_GetCurrentFontFile(enumerator, &file);
         if (FAILED(hr))

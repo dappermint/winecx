@@ -26,7 +26,6 @@
 #include <pthread.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "ntgdi_private.h"
 #include "win32u_private.h"
 #include "ntuser_private.h"
@@ -493,7 +492,7 @@ static void d3dkmt_init_vulkan(void)
     static const struct vulkan_instance_extensions extensions =
     {
         .has_VK_KHR_get_physical_device_properties2 = 1,
-        .has_VK_KHR_external_memory_capabilities = 1,
+        .has_VK_KHR_external_fence_capabilities = 1,
     };
 
     d3dkmt_vulkan_instance = vulkan_instance_create( &extensions );
@@ -552,7 +551,7 @@ NTSTATUS WINAPI NtGdiDdDDIEscape( const D3DKMT_ESCAPE *desc )
     {
         HWND hwnd = UlongToHandle( desc->hContext );
         RECT *rect = desc->pPrivateDriverData;
-        UINT dpi = get_dpi_for_window( hwnd );
+        struct ratio dpi = get_dpi_for_window( hwnd );
         WND *win;
 
         if (desc->PrivateDriverDataSize != sizeof(*rect)) return STATUS_INVALID_PARAMETER;
@@ -591,7 +590,7 @@ static struct vulkan_physical_device *get_vulkan_physical_device( struct vulkan_
 {
     GUID uuid;
 
-    if (!get_vulkan_uuid_from_luid( luid, &uuid ))
+    if (!get_gpu_uuid_from_luid( luid, &uuid ))
     {
         WARN( "Failed to find Vulkan device with LUID %08x:%08x.\n", luid->HighPart, luid->LowPart );
         return NULL;
@@ -709,7 +708,7 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
         if (desc->PrivateDriverDataSize < sizeof(*value))
             return STATUS_INVALID_PARAMETER;
 
-        *value = KMT_DRIVERVERSION_WDDM_1_3;
+        *value = KMT_DRIVERVERSION_WDDM_3_1;
         return STATUS_SUCCESS;
     }
     /* CW HACK 24905 */
@@ -1013,7 +1012,7 @@ BOOL get_vulkan_gpus( struct list *gpus )
 
     for (i = 0; i < instance->physical_device_count; ++i)
     {
-        struct vulkan_gpu *gpu;
+        struct gpu_info *gpu;
 
         if (!(gpu = calloc( 1, sizeof(*gpu) ))) break;
         memcpy( &gpu->uuid, devinfo[i].id.deviceUUID, sizeof(gpu->uuid) );
@@ -1032,12 +1031,6 @@ BOOL get_vulkan_gpus( struct list *gpus )
 
     free( devinfo );
     return TRUE;
-}
-
-void free_vulkan_gpu( struct vulkan_gpu *gpu )
-{
-    free( gpu->name );
-    free( gpu );
 }
 
 /******************************************************************************
@@ -1630,7 +1623,9 @@ NTSTATUS WINAPI NtGdiDdDDIAcquireKeyedMutex2( D3DKMT_ACQUIREKEYEDMUTEX2 *params 
 
             status = wine_server_call( req );
             params->FenceValue = reply->fence_value;
-            wait_handle = wine_server_ptr_handle( reply->wait_handle );
+            /* server never creates a new handle if one is provided, and always returns a handle if pending */
+            if (reply->wait_handle) wait_handle = wine_server_ptr_handle( reply->wait_handle );
+            else if (wait_handle) NtClose( wait_handle );
         }
         SERVER_END_REQ;
     } while (status == STATUS_PENDING);

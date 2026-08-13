@@ -30,7 +30,6 @@
 #include <string.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "waylanddrv.h"
 #include "wine/debug.h"
 
@@ -81,18 +80,16 @@ static void wayland_gl_drawable_sync_size(struct wayland_gl_drawable *gl)
     wl_egl_window_resize(gl->wl_egl_window, client_width, client_height, 0, 0);
 }
 
-static BOOL wayland_opengl_surface_create(HWND hwnd, int format, struct opengl_drawable **drawable)
+static BOOL wayland_opengl_surface_create(struct client_surface *client, int format, struct opengl_drawable **drawable)
 {
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
     EGLConfig config = egl_config_for_format(format);
-    struct wayland_client_surface *client;
     EGLint attribs[4], *attrib = attribs;
-    struct opengl_drawable *previous;
     struct wayland_gl_drawable *gl;
+    HWND hwnd = client->hwnd;
     RECT rect;
 
-    TRACE("hwnd=%p format=%d\n", hwnd, format);
-
-    if ((previous = *drawable) && previous->format == format) return TRUE;
+    TRACE("client=%s format=%d\n", debugstr_client_surface(client), format);
 
     NtUserGetClientRect(hwnd, &rect, NtUserGetDpiForWindow(hwnd));
     if (rect.right == rect.left) rect.right = rect.left + 1;
@@ -107,22 +104,19 @@ static BOOL wayland_opengl_surface_create(HWND hwnd, int format, struct opengl_d
     }
     *attrib++ = EGL_NONE;
 
-    if (!(client = wayland_client_surface_create(hwnd))) return FALSE;
-    gl = opengl_drawable_create(sizeof(*gl), &wayland_drawable_funcs, format, &client->client);
-    client_surface_release(&client->client);
-    if (!gl) return FALSE;
-    gl->base.buffer_map[0] = GL_BACK_LEFT;
-    gl->base.buffer_map[1] = GL_BACK_RIGHT;
-    gl->base.buffer_map[GL_FRONT - GL_FRONT_LEFT] = GL_BACK;
-    gl->base.buffer_map[GL_FRONT_AND_BACK - GL_FRONT_LEFT] = GL_BACK;
+    if (!(gl = opengl_drawable_create(sizeof(*gl), &wayland_drawable_funcs, format, client))) return FALSE;
 
-    if (!(gl->wl_egl_window = wl_egl_window_create(client->wl_surface, rect.right, rect.bottom))) goto err;
+    opengl_drawable_map_buffer(&gl->base, GL_FRONT_LEFT, GL_BACK_LEFT);
+    opengl_drawable_map_buffer(&gl->base, GL_FRONT, GL_BACK);
+    opengl_drawable_map_buffer(&gl->base, GL_FRONT_AND_BACK, GL_BACK);
+    if (gl->base.stereo) opengl_drawable_map_buffer(&gl->base, GL_FRONT_RIGHT, GL_BACK_RIGHT);
+
+    if (!(gl->wl_egl_window = wl_egl_window_create(surface->wl_surface, rect.right, rect.bottom))) goto err;
     if (!(gl->base.surface = funcs->p_eglCreateWindowSurface(egl->display, config, gl->wl_egl_window, attribs))) goto err;
-    set_client_surface(hwnd, client);
+    set_client_surface(hwnd, surface);
 
     TRACE("Created drawable %s with egl_surface %p\n", debugstr_opengl_drawable(&gl->base), gl->base.surface);
 
-    if (previous) opengl_drawable_release( previous );
     *drawable = &gl->base;
     return TRUE;
 
@@ -259,7 +253,7 @@ UINT WAYLAND_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, c
     wayland_driver_funcs.p_get_proc_address = (*driver_funcs)->p_get_proc_address;
     wayland_driver_funcs.p_init_pixel_formats = (*driver_funcs)->p_init_pixel_formats;
     wayland_driver_funcs.p_describe_pixel_format = (*driver_funcs)->p_describe_pixel_format;
-    wayland_driver_funcs.p_init_wgl_extensions = (*driver_funcs)->p_init_wgl_extensions;
+    wayland_driver_funcs.p_init_extensions = (*driver_funcs)->p_init_extensions;
     wayland_driver_funcs.p_context_create = (*driver_funcs)->p_context_create;
     wayland_driver_funcs.p_context_destroy = (*driver_funcs)->p_context_destroy;
     wayland_driver_funcs.p_make_current = (*driver_funcs)->p_make_current;
