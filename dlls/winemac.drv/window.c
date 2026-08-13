@@ -1178,6 +1178,18 @@ static void macdrv_client_surface_update(struct client_surface *client)
 
     TRACE("%s\n", debugstr_client_surface(client));
 
+    if (surface->remote_toplevel)
+    {
+        RECT container, frame;
+
+        /* no superview resizes an offscreen tree, so track the window here;
+         * this runs on every present, on the thread doing it */
+        if (!get_hosted_rects(hwnd, surface->remote_toplevel, &container, &frame)) return;
+        macdrv_swapchain_set_frame(surface->metal_swapchain, cgrect_from_rect(container),
+                                   cgrect_from_rect(frame));
+        return;
+    }
+
     if (!(data = get_win_data(toplevel))) return;
     macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(client->monitor_rect));
     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
@@ -1232,6 +1244,66 @@ struct client_surface *macdrv_CreateClientSurface(HWND hwnd, int pixel_format)
     return &surface->client;
 }
 
+/* Client rect of hwnd, and of its top level, both in the top level's client
+ * coordinates.  This is the space a hosted layer tree lives in. */
+static BOOL get_hosted_rects(HWND hwnd, HWND toplevel, RECT *container, RECT *frame)
+{
+    UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
+
+    if (!NtUserGetClientRect(toplevel, container, NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI)))
+        return FALSE;
+    if (!NtUserGetClientRect(hwnd, frame, dpi)) return FALSE;
+    if (hwnd != toplevel) NtUserMapWindowPoints(hwnd, toplevel, (POINT *)frame, 2, dpi);
+
+    /* the window can still be unsized when a client first asks for a surface,
+     * and a zero-sized drawable has no area to render into */
+    if (IsRectEmpty(frame)) *frame = *container;
+    return !IsRectEmpty(container);
+}
+
+/* Depth-first, front-to-back walk of the descendants: GW_CHILD is the top of
+ * the sibling z-order and GW_HWNDNEXT descends it, so the first host matched
+ * gets the highest zPosition.  A host whose window is not visible is hidden
+ * outright: chromium keeps a standby surface per window and flips WS_VISIBLE
+ * between two child windows, and a stale frame in the standby must not cover
+ * the live one. */
+static unsigned int resync_walk(struct macdrv_win_data *data, HWND hwnd, unsigned int next_z)
+{
+    HWND child;
+    unsigned int i;
+
+    for (child = NtUserGetWindowRelative(hwnd, GW_CHILD); child;
+         child = NtUserGetWindowRelative(child, GW_HWNDNEXT))
+    {
+        for (i = 0; i < data->remote_layer_count; i++)
+        {
+            if (data->remote_layers[i].hwnd != child) continue;
+            macdrv_window_set_ca_layer_host_state(data->cocoa_window, data->remote_layers[i].ctx,
+                                                  !NtUserIsWindowVisible(child), (double)next_z);
+            next_z--;
+        }
+        next_z = resync_walk(data, child, next_z);
+    }
+    return next_z;
+}
+
+void macdrv_resync_remote_layers(HWND toplevel)
+{
+    struct macdrv_win_data *data;
+    unsigned int i;
+
+    if (!(data = get_win_data(toplevel))) return;
+    if (data->remote_layer_count && data->cocoa_window)
+    {
+        resync_walk(data, toplevel, 1000);
+        /* a host whose hwnd is gone keeps a dead context; hide it */
+        for (i = 0; i < data->remote_layer_count; i++)
+            if (!NtUserIsWindow(data->remote_layers[i].hwnd))
+                macdrv_window_set_ca_layer_host_state(data->cocoa_window, data->remote_layers[i].ctx, 1, 0.0);
+    }
+    release_win_data(data);
+}
+
 BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface)
 {
     HWND hwnd = surface->client.hwnd;
@@ -1246,16 +1318,19 @@ BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface 
     }
     else
     {
-        RECT rect;
+        HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+        RECT container, frame;
 
-        if (NtUserGetAncestor(hwnd, GA_ROOT) != hwnd)
-        {
-            FIXME("Cross-process child window Metal swapchains are not implemented\n");
-            return FALSE;
-        }
+        /* The top level belongs to another process, so its Cocoa views are out
+         * of reach.  Render into an offscreen tree sized to the top level's
+         * client area, positioned at our rect within it, and have the owning
+         * process host the whole tree.  Chromium's gpu process renders into
+         * exactly such child windows, which is why steam's ui needs this. */
+        if (!get_hosted_rects(hwnd, toplevel, &container, &frame)) return FALSE;
 
-        if (!NtUserGetClientRect(hwnd, &rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI))) return FALSE;
-        surface->metal_swapchain = macdrv_create_offscreen_swapchain(hwnd, cgrect_from_rect(rect));
+        surface->remote_toplevel = toplevel;
+        surface->metal_swapchain = macdrv_create_offscreen_swapchain(toplevel, hwnd,
+                cgrect_from_rect(container), cgrect_from_rect(frame));
     }
 
     return surface->metal_swapchain != NULL;
@@ -1346,6 +1421,7 @@ void macdrv_DestroyWindow(HWND hwnd)
     /* CW HACK 22435 */
     if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
 
+    free(data->remote_layers);
     CFDictionaryRemoveValue(win_datas, hwnd);
     release_win_data(data);
     free(data);
@@ -1630,15 +1706,36 @@ LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MACDRV_CREATE_REMOTE_LAYER:
         if ((data = get_win_data(hwnd)))
         {
-            TRACE("WM_MACDRV_CREATE_REMOTE_LAYER context_id %u\n", (unsigned int)lp);
-            if (data->cocoa_window) macdrv_window_create_ca_layer_host_view(data->cocoa_window, (unsigned int)lp);
+            TRACE("WM_MACDRV_CREATE_REMOTE_LAYER context_id %u client hwnd %p\n", (unsigned int)lp, (HWND)wp);
+            if (data->cocoa_window)
+            {
+                struct remote_layer_entry *grown = realloc(data->remote_layers,
+                        (data->remote_layer_count + 1) * sizeof(*grown));
+                if (grown)
+                {
+                    grown[data->remote_layer_count].ctx = (unsigned int)lp;
+                    grown[data->remote_layer_count].hwnd = wp ? (HWND)wp : hwnd;
+                    data->remote_layers = grown;
+                    data->remote_layer_count++;
+                }
+                macdrv_window_create_ca_layer_host_view(data->cocoa_window, (unsigned int)lp);
+            }
             release_win_data(data);
+            macdrv_resync_remote_layers(hwnd);
         }
         return 0;
     case WM_MACDRV_RELEASE_REMOTE_LAYER:
         if ((data = get_win_data(hwnd)))
         {
+            unsigned int i;
+
             TRACE("WM_MACDRV_RELEASE_REMOTE_LAYER context_id %u\n", (unsigned int)lp);
+            for (i = 0; i < data->remote_layer_count; i++)
+            {
+                if (data->remote_layers[i].ctx != (unsigned int)lp) continue;
+                data->remote_layers[i] = data->remote_layers[--data->remote_layer_count];
+                break;
+            }
             if (data->cocoa_window) macdrv_window_release_ca_layer_host_view(data->cocoa_window, (unsigned int)lp);
             release_win_data(data);
         }
@@ -1650,9 +1747,9 @@ LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 
-void macdrv_create_remote_layer(void* hwnd_ptr, unsigned int context_id)
+void macdrv_create_remote_layer(void* hwnd_ptr, void* client_ptr, unsigned int context_id)
 {
-    NtUserPostMessage((HWND)hwnd_ptr, WM_MACDRV_CREATE_REMOTE_LAYER, 0, context_id);
+    NtUserPostMessage((HWND)hwnd_ptr, WM_MACDRV_CREATE_REMOTE_LAYER, (WPARAM)client_ptr, context_id);
 }
 
 
@@ -1714,6 +1811,10 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
 void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                              const struct window_rects *new_rects, struct window_surface *surface)
 {
+    /* a child window this driver otherwise ignores may be the render target of
+     * another process's hosted layer; show/hide and z changes land here */
+    macdrv_resync_remote_layers(NtUserGetAncestor(hwnd, GA_ROOT));
+
     BOOL fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
     struct macdrv_thread_data *thread_data;
     struct macdrv_win_data *data;

@@ -187,6 +187,8 @@ struct macdrv_win_data
     HWND                hwnd;                   /* hwnd that this private data belongs to */
     macdrv_window       cocoa_window;
     macdrv_view         client_view;
+    struct remote_layer_entry *remote_layers;   /* which context renders which child hwnd */
+    unsigned int        remote_layer_count;
     struct window_rects rects;                  /* window rects in monitor DPI, relative to parent client area */
     int                 pixel_format;           /* pixel format for GL */
     HANDLE              drag_event;             /* event to signal that Cocoa-driven window dragging has ended */
@@ -207,7 +209,16 @@ struct macdrv_client_surface
     struct client_surface   client;
     macdrv_view             cocoa_view;
     macdrv_metal_swapchain  metal_swapchain;
+    HWND                    remote_toplevel;   /* set when the metal swapchain is hosted by another process */
 };
+
+struct remote_layer_entry
+{
+    unsigned int ctx;
+    HWND         hwnd;
+};
+
+extern void macdrv_resync_remote_layers(HWND toplevel);
 
 extern struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client);
 extern BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);

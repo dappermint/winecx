@@ -411,6 +411,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
     - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device;
     - (void) addCALayerHostViewWithContextId:(CAContextID)contextId;
     - (void) removeCALayerHostView:(CAContextID)contextId;
+    - (void) setCALayerHostState:(CAContextID)contextId hidden:(BOOL)hostHidden zPosition:(CGFloat)zpos;
 
 @end
 
@@ -750,6 +751,17 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
         NSNumber* key = @(contextId);
         [[_caLayerHosts objectForKey:key] removeFromSuperlayer];
         [_caLayerHosts removeObjectForKey:key];
+    }
+
+    - (void) setCALayerHostState:(CAContextID)contextId hidden:(BOOL)hostHidden zPosition:(CGFloat)zpos
+    {
+        CALayerHost* host = [_caLayerHosts objectForKey:@(contextId)];
+        if (!host) return;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        host.hidden = hostHidden;
+        host.zPosition = zpos;
+        [CATransaction commit];
     }
 
     - (void) setLayerRetinaProperties:(BOOL)mode
@@ -4175,24 +4187,28 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
 @interface CAContextSwapChain : NSObject <WineMetalSwapChain>
 {
     void* hwnd;
+    void* client_hwnd;
     macdrv_metal_device device;
+    CALayer* container_layer;
     CAMetalLayer* offscreen_layer;
     CAContext* remote_context;
     CAContextID context_id;
 }
 
-- (instancetype) initWithHwnd:(void*)hwnd bounds:(CGRect)bounds;
+- (instancetype) initWithHwnd:(void*)hwnd client:(void*)client container:(CGRect)container frame:(CGRect)frame;
+- (void) setContainer:(CGRect)container frame:(CGRect)frame;
 
 @end
 
 @implementation CAContextSwapChain
 
-- (instancetype) initWithHwnd:(void*)newHwnd bounds:(CGRect)bounds
+- (instancetype) initWithHwnd:(void*)newHwnd client:(void*)newClient container:(CGRect)container frame:(CGRect)frame
 {
     self = [super init];
     if (!self) return nil;
 
     hwnd = newHwnd;
+    client_hwnd = newClient;
     if (!(device = macdrv_create_metal_device()))
     {
         [self release];
@@ -4200,7 +4216,8 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
     }
 
     offscreen_layer = [[CAMetalLayer alloc] init];
-    if (!offscreen_layer)
+    container_layer = [[CALayer alloc] init];
+    if (!offscreen_layer || !container_layer)
     {
         macdrv_release_metal_device(device);
         device = NULL;
@@ -4213,15 +4230,24 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
     offscreen_layer.magnificationFilter = kCAFilterNearest;
     offscreen_layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     offscreen_layer.contentsScale = retina_on ? 2.0 : 1.0;
-    [offscreen_layer setBounds:cgrect_mac_from_win(bounds)];
-    [offscreen_layer setAnchorPoint:CGPointMake(0, 0)];
 
-    /* Export the CAMetalLayer from the rendering process, then have the
+    /* The hosting end takes its size from the layer tree we publish and
+     * ignores the frame it sets locally, so a window which only covers part
+     * of its top level has to be positioned here.  Wrap the drawable in a
+     * container the size of the top level's client area and place it at the
+     * child's offset; geometryFlipped keeps windows coordinates. */
+    container_layer.anchorPoint = CGPointMake(0, 0);
+    container_layer.position = CGPointMake(0, 0);
+    container_layer.geometryFlipped = YES;
+    [container_layer addSublayer:offscreen_layer];
+    [self setContainer:container frame:frame];
+
+    /* Export the layer tree from the rendering process, then have the
      * target HWND's owner host it using CALayerHost. */
     OnMainThread(^{
         remote_context = [[CAContext contextWithCGSConnection:CGSMainConnectionID()
                                                       options:[NSDictionary dictionary]] retain];
-        [remote_context setLayer:offscreen_layer];
+        [remote_context setLayer:container_layer];
         context_id = [remote_context contextId];
     });
 
@@ -4231,8 +4257,23 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
         return nil;
     }
 
-    macdrv_create_remote_layer(hwnd, context_id);
+    macdrv_create_remote_layer(hwnd, client_hwnd, context_id);
     return self;
+}
+
+- (void) setContainer:(CGRect)container frame:(CGRect)frame
+{
+    CALayer* c = container_layer;
+    CAMetalLayer* o = offscreen_layer;
+
+    /* no implicit animation, a resize must land in one frame */
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    c.bounds = CGRectMake(0, 0, CGRectGetWidth(container), CGRectGetHeight(container));
+    o.anchorPoint = CGPointMake(0, 0);
+    o.bounds = CGRectMake(0, 0, CGRectGetWidth(frame), CGRectGetHeight(frame));
+    o.position = CGPointMake(CGRectGetMinX(frame), CGRectGetMinY(frame));
+    [CATransaction commit];
 }
 
 - (CAMetalLayer*) layer
@@ -4244,6 +4285,7 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
 {
     if (context_id) macdrv_release_remote_layer(hwnd, context_id);
     CAContext *context = remote_context;
+    CALayer *container = container_layer;
     CAMetalLayer *layer = offscreen_layer;
     macdrv_metal_device dev = device;
 
@@ -4251,6 +4293,7 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
         [context setLayer:nil];
         [context release];
         [layer release];
+        [container release];
         if (dev) macdrv_release_metal_device(dev);
     });
 
@@ -4293,6 +4336,29 @@ void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int conte
             [(WineContentView*)content_view addCALayerHostViewWithContextId:context_id];
     });
 }
+}
+
+void macdrv_window_set_ca_layer_host_state(macdrv_window w, unsigned int context_id, int hidden, double zpos)
+{
+@autoreleasepool
+{
+    WineWindow* window = (WineWindow*)w;
+
+    OnMainThreadAsync(^{
+        NSView* content_view = [window contentView];
+
+        if ([content_view isKindOfClass:[WineContentView class]])
+            [(WineContentView*)content_view setCALayerHostState:context_id hidden:(hidden != 0) zPosition:zpos];
+    });
+}
+}
+
+void macdrv_swapchain_set_frame(macdrv_metal_swapchain swapchain, CGRect container, CGRect frame)
+{
+    id chain = (id)swapchain;
+
+    if ([chain respondsToSelector:@selector(setContainer:frame:)])
+        [chain setContainer:container frame:frame];
 }
 
 void macdrv_window_release_ca_layer_host_view(macdrv_window w, unsigned int context_id)
