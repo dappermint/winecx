@@ -1145,6 +1145,11 @@ static const char* driver_vendor_to_version( UINT16 vendor )
     case 0x8086: /* Intel */    return "35.0.101.6314";
     case 0x1002: /* AMD */      return "35.0.21025.1024";
     case 0x10de: /* Nvidia */   return "35.0.15.6094";
+    /* Apple GPUs have no PCI driver revision, so every value here is invented
+     * either way. The default decodes to 010.00 under the vendor parsers that
+     * strip the dots and keep the last five digits, which is below the minimum
+     * those titles accept, and they refuse to start rather than degrade. */
+    case 0x106b: /* Apple */    return "35.0.15.6094";
     default:                    return "35.0.10.1000";
     }
 }
