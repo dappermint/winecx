@@ -31,6 +31,27 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(ntdll);
 
+#ifdef __x86_64__
+/* Mono's jit compiles Marshal.GetLastWin32Error() to a bare `mov reg,%gs:0x68`
+ * instead of a call, so the last error has to be readable straight off %gs.
+ * That is free on hosts where %gs is the TEB, but macOS keeps its own thread
+ * data there and only a handful of TEB fields are mirrored into it, so write
+ * this one as well. 0x68 is the pthread slot gmtime() would use; loader.c hooks
+ * gmtime() away for that reason, the same way it already does for localtime()
+ * over the PEB at 0x60. */
+static inline void mirror_last_error( DWORD err )
+{
+    /* a 4-byte store: where %gs really is the TEB this is the very field we
+     * just wrote, and anything wider would take CountOfOwnedCriticalSections
+     * with it. init_syscall_frame clears the whole slot once per thread. */
+    __asm__ volatile( "movl %0,%%gs:0x68" :: "r" (err) );
+}
+#else
+static inline void mirror_last_error( DWORD err )
+{
+}
+#endif
+
 /**************************************************************************
  *           RtlNtStatusToDosErrorNoTeb (NTDLL.@)
  *
@@ -121,6 +142,7 @@ DWORD WINAPI RtlGetLastWin32Error(void)
 void WINAPI RtlSetLastWin32Error( DWORD err )
 {
     NtCurrentTeb()->LastErrorValue = err;
+    mirror_last_error( err );
 }
 
 /***********************************************************************
@@ -137,4 +159,5 @@ void WINAPI RtlSetLastWin32Error( DWORD err )
 void WINAPI RtlSetLastWin32ErrorAndNtStatusFromNtStatus( NTSTATUS status )
 {
     NtCurrentTeb()->LastErrorValue = RtlNtStatusToDosError( status );
+    mirror_last_error( NtCurrentTeb()->LastErrorValue );
 }

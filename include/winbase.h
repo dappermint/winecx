@@ -2521,6 +2521,11 @@ static FORCEINLINE HANDLE WINAPI GetProcessHeap(void)
 static FORCEINLINE void WINAPI SetLastError( DWORD err )
 {
     *(DWORD *)((void **)NtCurrentTeb() + 13) = err;
+#ifdef __x86_64__
+    /* mirror it into %gs as well, mono reads the last error straight off there.
+     * see RtlSetLastWin32Error in dlls/ntdll/error.c for why. */
+    __asm__ __volatile__( "movl %0,%%gs:0x68" :: "r" (err) );
+#endif
 }
 
 #else  /* __WINESRC__ */

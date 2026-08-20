@@ -3069,6 +3069,9 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     __asm__ volatile ("movq %0,%%gs:%c1" :: "r" (teb->Tib.Self), "n" (FIELD_OFFSET(TEB, Tib.Self)));
     __asm__ volatile ("movq %0,%%gs:%c1" :: "r" (teb->ThreadLocalStoragePointer), "n" (FIELD_OFFSET(TEB, ThreadLocalStoragePointer)));
     __asm__ volatile ("movq %0,%%gs:%c1" :: "r" (teb->Peb), "n" (FIELD_OFFSET(TEB, Peb)));
+    /* mono reads the last error straight off %gs, see RtlSetLastWin32Error */
+    __asm__ volatile ("movq %0,%%gs:%c1" :: "r" ((ULONG64)teb->LastErrorValue),
+                      "n" (FIELD_OFFSET(TEB, LastErrorValue)));
     thread_data->pthread_teb = mac_thread_gsbase();
     /* alloc_tls_slot() needs to poke a value to an address relative to each
        thread's gsbase.  Have each thread record its gsbase pointer into its

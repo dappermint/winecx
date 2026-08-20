@@ -2122,6 +2122,12 @@ struct tm *my_localtime(const time_t *timep)
     return localtime_r(timep, &localtime_tls);
 }
 
+static __thread struct tm gmtime_tls;
+struct tm *my_gmtime(const time_t *timep)
+{
+    return gmtime_r(timep, &gmtime_tls);
+}
+
 static void hook(void *to_hook, const void *replace)
 {
     size_t offset;
@@ -2184,6 +2190,9 @@ static void start_main_thread(void)
     /* This is necessary because we poke PEB into pthread TLS at offset 0x60. It is normally in use by
      * localtime(), which is called a lot by system libraries. Make localtime() go away. */
     hook(localtime, my_localtime);
+    /* Likewise for gmtime() over offset 0x68, where the last error is mirrored so that mono can read
+     * it off %gs the way it does on Windows. */
+    hook(gmtime, my_gmtime);
 #endif
 
     /* CW Hack 24067 */
