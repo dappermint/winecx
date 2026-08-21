@@ -691,13 +691,30 @@ void msync_init(void)
     }
 }
 
+
+/* An auto-reset event, its server-side twin and a mutex release exactly one
+ * waiter. Waking the rest buys them a trip through the scheduler to find the
+ * object already taken, so wake one and leave them asleep. */
+static inline uint32_t wake_flags( unsigned short msync_type )
+{
+    switch (msync_type)
+    {
+    case MSYNC_AUTO_EVENT:
+    case MSYNC_AUTO_SERVER:
+    case MSYNC_MUTEX:
+        return 0;
+    default:
+        return ULF_WAKE_ALL;
+    }
+}
+
 static inline void signal_all( void *shm, unsigned int shm_idx )
 {
     __thread static mach_msg_header_t send_header;
     struct event *event_obj = (struct event *)shm;
 
     if (__atomic_load_n( &event_obj->single_waiters, __ATOMIC_SEQ_CST ))
-        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, shm, 0 );
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | wake_flags( event_obj->msync_type ), shm, 0 );
 
     if (!__atomic_load_n( &event_obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return;
