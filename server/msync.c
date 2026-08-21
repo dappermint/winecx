@@ -410,13 +410,30 @@ static inline mach_msg_return_t destroy_all( unsigned int shm_idx )
                 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0);
 }
 
+
+/* An auto-reset event, its server-side twin and a mutex release exactly one
+ * waiter. Waking the rest buys them a trip through the scheduler to find the
+ * object already taken, so wake one and leave them asleep. */
+static inline uint32_t wake_flags( unsigned short msync_type )
+{
+    switch (msync_type)
+    {
+    case MSYNC_AUTO_EVENT:
+    case MSYNC_AUTO_SERVER:
+    case MSYNC_MUTEX:
+        return 0;
+    default:
+        return ULF_WAKE_ALL;
+    }
+}
+
 static inline mach_msg_return_t signal_all( unsigned int shm_idx, int *shm )
 {
     static mach_msg_header_t send_header;
     struct msync_shm *obj = (struct msync_shm *)shm;
 
     if (__atomic_load_n( &obj->single_waiters, __ATOMIC_SEQ_CST ))
-        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | wake_flags( obj->msync_type ), (void *)shm, 0 );
 
     if (!__atomic_load_n( &obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return MACH_MSG_SUCCESS;
