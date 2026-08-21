@@ -113,11 +113,15 @@ static inline void spin_hint(void)
 }
 
 /* How long to spin waiting for the server to acknowledge a registration before
- * sleeping instead. The pump normally gets there in well under a microsecond;
- * this only matters when it is behind, which is exactly when the core it needs
- * should not be busy spinning. Tune with synctest. */
-#define MSYNC_REGISTER_SPINS    256
+ * sleeping instead. Measured at 0: the pump round trip is longer than any spin
+ * worth doing, and a spinning waiter holds a core the pump needs. On an M4 Max,
+ * 8 threads, 100000 wakeups through the broker, multi wait ran 502 and 564ms at
+ * 0 spins against 854 and 781 at 32 and 789 and 1023 at 256. WINEMSYNC_SPINS
+ * re-tunes it without a rebuild. */
+#define MSYNC_REGISTER_SPINS    0
 #define MSYNC_REGISTER_SLEEP_NS 1000000
+
+static int msync_register_spins = MSYNC_REGISTER_SPINS;
 
 /*
  * Faster to directly do the syscall and inline everything, taken and slightly adapted
@@ -421,7 +425,7 @@ static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert
             return STATUS_PENDING;
         }
 
-        if (++spins <= MSYNC_REGISTER_SPINS)
+        if (++spins <= msync_register_spins)
         {
             spin_hint();
             continue;
@@ -659,6 +663,13 @@ void msync_init(void)
         snprintf( message_port_name, 28, "wine-%lx-msync", (unsigned long)st.st_ino );
 
     pagesize = (long)vm_kernel_page_size;
+
+    if (getenv("WINEMSYNC_SPINS"))
+    {
+        int spins = atoi( getenv("WINEMSYNC_SPINS") );
+
+        if (spins >= 0) msync_register_spins = spins;
+    }
 
     shm_addrs = calloc( 128, sizeof(shm_addrs[0]) );
     shm_addrs_size = 128;
