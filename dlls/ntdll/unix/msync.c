@@ -195,7 +195,8 @@ struct semaphore
     int max;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct semaphore) == 16);
 
@@ -205,7 +206,8 @@ struct event
     int unused;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct event) == 16);
 
@@ -215,7 +217,8 @@ struct mutex
     int count;  /* recursion count */
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct mutex) == 16);
 
@@ -317,8 +320,15 @@ static inline void server_remove_wait( unsigned int msgh_id, const int *objs, vo
 static inline NTSTATUS msync_wait_single( int obj, void *obj_shm,
                                           ULONGLONG *end, int tid )
 {
-    int ret, val = 0;
+    struct event *event_obj = (struct event *)obj_shm;
+    NTSTATUS status = STATUS_SUCCESS;
+    int ret = 0, val = 0;
     ULONGLONG ns_timeleft = 0;
+
+    /* Publish before the last look at the value. A signal landing in that
+     * window either sees us and wakes, or has not happened yet, in which case
+     * ulock compares the value for us and does not put us to sleep. */
+    __atomic_add_fetch( &event_obj->single_waiters, 1, __ATOMIC_SEQ_CST );
 
     do 
     {
@@ -329,21 +339,31 @@ static inline NTSTATUS msync_wait_single( int obj, void *obj_shm,
                 val = tid;
         }
 
-        if (__atomic_load_n( (int *)obj_shm, __ATOMIC_ACQUIRE ) != val)
-            return STATUS_PENDING;
+        if (__atomic_load_n( (int *)obj_shm, __ATOMIC_SEQ_CST ) != val)
+        {
+            status = STATUS_PENDING;
+            break;
+        }
 
         if (end)
         {
             ns_timeleft = update_timeout( *end ) * 100;
-            if (!ns_timeleft) return STATUS_TIMEOUT;
+            if (!ns_timeleft)
+            {
+                status = STATUS_TIMEOUT;
+                break;
+            }
         }
         ret = ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, obj_shm, val, ns_timeleft );
     } while (ret == -EINTR || ret == -EFAULT);
 
     if (ret == -ETIMEDOUT)
-        return STATUS_TIMEOUT;
+        status = STATUS_TIMEOUT;
 
-    return STATUS_SUCCESS;
+    if (__atomic_sub_fetch( &event_obj->single_waiters, 1, __ATOMIC_SEQ_CST ) < 0)
+        __atomic_store_n( &event_obj->single_waiters, 0, __ATOMIC_SEQ_CST );
+
+    return status;
 }
 
 static inline int check_shm_contention( void **objs_shm, void *alert_obj_shm, int count, int tid )
@@ -676,7 +696,8 @@ static inline void signal_all( void *shm, unsigned int shm_idx )
     __thread static mach_msg_header_t send_header;
     struct event *event_obj = (struct event *)shm;
 
-    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, shm, 0 );
+    if (__atomic_load_n( &event_obj->single_waiters, __ATOMIC_SEQ_CST ))
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, shm, 0 );
 
     if (!__atomic_load_n( &event_obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return;

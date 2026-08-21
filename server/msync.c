@@ -371,7 +371,8 @@ struct msync_shm
     int high;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 static unsigned int last_allocated_idx = 1;
@@ -414,7 +415,9 @@ static inline mach_msg_return_t signal_all( unsigned int shm_idx, int *shm )
     static mach_msg_header_t send_header;
     struct msync_shm *obj = (struct msync_shm *)shm;
 
-    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
+    if (__atomic_load_n( &obj->single_waiters, __ATOMIC_SEQ_CST ))
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
+
     if (!__atomic_load_n( &obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return MACH_MSG_SUCCESS;
 
@@ -736,6 +739,7 @@ static unsigned int msync_alloc_shm( int low, int high, enum msync_type type )
     shm->high = high;
     shm->msync_type = type;
     shm->multiple_waiters = 0;
+    shm->single_waiters = 0;
     __atomic_store_n( &shm->refcount, 1, __ATOMIC_SEQ_CST );
 
     return shm_idx;
@@ -762,7 +766,8 @@ struct msync_event
     int unused;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 void msync_set_event( struct msync *msync )
@@ -786,7 +791,8 @@ struct mutex
     int count;  /* recursion count */
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 void msync_abandon_mutexes( thread_id_t tid )
