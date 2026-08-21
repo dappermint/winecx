@@ -762,6 +762,16 @@ NTSTATUS msync_set_event_obj( int obj, LONG *prev_state )
     struct event *event = get_shm( obj );
     LONG current;
 
+    /* Read before the exchange. Setting an event that is already set changes
+     * nothing and wakes nobody, but the exchange still takes the line
+     * exclusive, and a thread that signals in a loop then holds it against
+     * every waiter trying to take the event. */
+    if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
+    {
+        if (prev_state) *prev_state = 1;
+        return STATUS_SUCCESS;
+    }
+
     if (!(current = __atomic_exchange_n( &event->signaled, 1, __ATOMIC_SEQ_CST )))
         signal_all( (void *)event, obj );
 
