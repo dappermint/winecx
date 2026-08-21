@@ -515,8 +515,10 @@ static void *mach_message_pump( void *args )
             add_tid( receive_message.shm_idx[i], tid );
             if (i == count - 1)
             {
-                /* The client can stop spinning and safely start waiting now */
-                __atomic_store_n( shm_tid_map + tid, 1, __ATOMIC_RELEASE );
+                /* The client can stop spinning and safely start waiting now.
+                 * 3 means it gave up spinning and is asleep on the slot. */
+                if (__atomic_exchange_n( shm_tid_map + tid, 1, __ATOMIC_SEQ_CST ) == 3)
+                    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED, shm_tid_map + tid, 0 );
             }
         }
     }

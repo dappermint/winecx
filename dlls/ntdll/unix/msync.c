@@ -103,6 +103,22 @@ static inline int ulock_wait( uint32_t operation, void *addr, uint64_t value, ui
     }
 }
 
+static inline void spin_hint(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm64__)
+    __asm__ __volatile__( "yield" ::: "memory" );
+#endif
+}
+
+/* How long to spin waiting for the server to acknowledge a registration before
+ * sleeping instead. The pump normally gets there in well under a microsecond;
+ * this only matters when it is behind, which is exactly when the core it needs
+ * should not be busy spinning. Tune with synctest. */
+#define MSYNC_REGISTER_SPINS    256
+#define MSYNC_REGISTER_SLEEP_NS 1000000
+
 /*
  * Faster to directly do the syscall and inline everything, taken and slightly adapted
  * from xnu/libsyscall/mach/mach_msg.c
@@ -359,7 +375,7 @@ static inline int check_shm_contention( void **objs_shm, void *alert_obj_shm, in
 static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert_obj, void *alert_obj_shm,
                                      int count, ULONGLONG *end, int tid )
 {
-    int ret, val;
+    int ret, val, spins;
     int *addr = shm_tid_map + tid;
     ULONGLONG ns_timeleft = 0;
     mach_msg_return_t mr;
@@ -373,13 +389,30 @@ static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert
     if (mr != MACH_MSG_SUCCESS)
         return STATUS_PENDING;
 
-    while (__atomic_load_n( addr, __ATOMIC_ACQUIRE ) == 2)
+    /* The server moves us off 2 once it has us registered, or straight to 0 if
+     * one of the objects was already signalled. Spin for that briefly, then
+     * publish 3 and sleep, so the pump is not competing with us for a core. */
+    spins = 0;
+    while ((val = __atomic_load_n( addr, __ATOMIC_ACQUIRE )) >= 2)
     {
         if (check_shm_contention( objs_shm, alert_obj_shm, count, tid ))
         {
             server_remove_wait( msgh_id, objs, objs_shm, alert_obj, alert_obj_shm, count );
             return STATUS_PENDING;
         }
+
+        if (++spins <= MSYNC_REGISTER_SPINS)
+        {
+            spin_hint();
+            continue;
+        }
+
+        if (val == 2 && !__atomic_compare_exchange_n( addr, &val, 3, 0,
+                                                      __ATOMIC_SEQ_CST, __ATOMIC_ACQUIRE ))
+            continue;
+
+        /* Bounded, so a wake we raced past cannot park us here for good. */
+        ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, addr, 3, MSYNC_REGISTER_SLEEP_NS );
     }
 
     do
