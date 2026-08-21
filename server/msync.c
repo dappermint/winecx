@@ -623,10 +623,20 @@ void msync_init(void)
 
     MACH_CHECK_ERROR(mach_port_insert_right(mach_task_self(), receive_port, receive_port, MACH_MSG_TYPE_MAKE_SEND), "mach_port_insert_right");
 
-    limits.mpl_qlimit = 50;
+    /* A full queue blocks the sending thread inside mach_msg() until the pump
+     * drains it, so a burst of signals stalls the threads producing them. */
+    limits.mpl_qlimit = MACH_PORT_QLIMIT_MAX;
 
     if (getenv("WINEMSYNC_QLIMIT"))
-        limits.mpl_qlimit = atoi(getenv("WINEMSYNC_QLIMIT"));
+    {
+        int qlimit = atoi( getenv("WINEMSYNC_QLIMIT") );
+
+        if (qlimit > 0 && qlimit <= MACH_PORT_QLIMIT_MAX)
+            limits.mpl_qlimit = qlimit;
+        else
+            fprintf( stderr, "msync: warning: ignoring WINEMSYNC_QLIMIT=%d, must be 1 to %d\n",
+                     qlimit, MACH_PORT_QLIMIT_MAX );
+    }
 
     MACH_CHECK_ERROR(mach_port_set_attributes( mach_task_self(), receive_port, MACH_PORT_LIMITS_INFO,
                                         (mach_port_info_t)&limits, MACH_PORT_LIMITS_INFO_COUNT), "mach_port_set_attributes");
