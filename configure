@@ -1246,6 +1246,7 @@ enable_l3codecx_ax
 enable_loadperf
 enable_localspl
 enable_localui
+enable_lsteamclient
 enable_lz32
 enable_magnification
 enable_mapi32
@@ -22731,6 +22732,7 @@ wine_fn_config_makefile dlls/localspl enable_localspl
 wine_fn_config_makefile dlls/localspl/tests enable_tests
 wine_fn_config_makefile dlls/localui enable_localui
 wine_fn_config_makefile dlls/localui/tests enable_tests
+wine_fn_config_makefile dlls/lsteamclient enable_lsteamclient
 wine_fn_config_makefile dlls/lz32 enable_lz32
 wine_fn_config_makefile dlls/lz32/tests enable_tests
 wine_fn_config_makefile dlls/lzexpand.dll16 enable_win16
