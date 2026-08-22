@@ -192,6 +192,19 @@ uint32_t manual_convert_nNativeKeyCode( uint32_t win_vk )
         return vk_to_xkeysym[win_vk];
     return 0;
 }
+#elif defined(__APPLE__)
+
+/* Steam Input reports keyboard origins by native key code, which is an X11
+ * keysym on the platform this table was written for. macOS has no equivalent
+ * we can produce here without guessing at what the native client expects, so
+ * report no key rather than the wrong one. The cost is that keyboard origins
+ * in Steam Input bindings come back blank; nothing else in the API depends on
+ * this. */
+uint32_t manual_convert_nNativeKeyCode( uint32_t win_vk )
+{
+    return 0;
+}
+
 #else
 #error You must implement VK<->Native keysym conversion for this platform.
 #endif
