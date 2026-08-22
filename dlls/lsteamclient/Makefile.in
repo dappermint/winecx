@@ -2,7 +2,7 @@ MODULE    = lsteamclient.dll
 UNIXLIB   = lsteamclient.so
 IMPORTS   = user32 ws2_32
 
-EXTRADEFS = -DSTEAM_API_EXPORTS -Dprivate=public -Dprotected=public
+EXTRADEFS = -DSTEAM_API_EXPORTS -Dprivate=public -Dprotected=public -DNOMINMAX
 
 SOURCES = \
 	steam_input_manual.c \
