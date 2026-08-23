@@ -795,8 +795,17 @@ static NTSTATUS steamclient_init( Params *params, bool wow64 )
     LOAD_FUNC( Steam_GetAPICallResult );
     LOAD_FUNC( Steam_FreeLastCallback );
     LOAD_FUNC( Steam_ReleaseThreadLocalMemory );
-    LOAD_FUNC( Steam_IsKnownInterface );
-    LOAD_FUNC( Steam_NotifyMissingInterface );
+
+/* Valve added these two for Proton's benefit and only to the Linux client.
+ * They report whether the client knows an interface version, and nothing here
+ * depends on the answer, so a client without them is not a client we have to
+ * refuse. */
+#define LOAD_OPTIONAL_FUNC( x )                                                \
+    if (!(p_##x = (decltype(p_##x))dlsym( steamclient, #x )))                  \
+        WARN( "host steamclient has no " #x ", carrying on without it\n" );
+
+    LOAD_OPTIONAL_FUNC( Steam_IsKnownInterface );
+    LOAD_OPTIONAL_FUNC( Steam_NotifyMissingInterface );
 
     TRACE( "Loaded host steamclient from %s\n", debugstr_a(path) );
     return 0;
@@ -851,14 +860,19 @@ static NTSTATUS steamclient_Steam_ReleaseThreadLocalMemory( Params *params, bool
 template< typename Params >
 static NTSTATUS steamclient_Steam_IsKnownInterface( Params *params, bool wow64 )
 {
-    params->_ret = p_Steam_IsKnownInterface( params->version );
+    /* Answer that it is known when the host cannot say. The caller uses this
+     * to decide whether to ask for the interface at all, and CreateInterface
+     * reports a genuinely missing one anyway; guessing the other way would
+     * hide interfaces that are actually there. */
+    if (!p_Steam_IsKnownInterface) params->_ret = 1;
+    else params->_ret = p_Steam_IsKnownInterface( params->version );
     return 0;
 }
 
 template< typename Params >
 static NTSTATUS steamclient_Steam_NotifyMissingInterface( Params *params, bool wow64 )
 {
-    p_Steam_NotifyMissingInterface( params->pipe, params->version );
+    if (p_Steam_NotifyMissingInterface) p_Steam_NotifyMissingInterface( params->pipe, params->version );
     return 0;
 }
 
