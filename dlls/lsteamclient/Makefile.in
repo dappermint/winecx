@@ -3,6 +3,7 @@ UNIXLIB   = lsteamclient.so
 IMPORTS   = user32 ws2_32
 
 EXTRADEFS = -DSTEAM_API_EXPORTS -Dprivate=public -Dprotected=public -DNOMINMAX
+UNIX_LIBS = -lc++
 
 SOURCES = \
 	steam_input_manual.c \
