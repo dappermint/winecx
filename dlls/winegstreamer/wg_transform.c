@@ -252,7 +252,20 @@ static WgVideoBufferPool *wg_video_buffer_pool_create(GstCaps *caps, gsize plane
     if (!(pool = g_object_new(wg_video_buffer_pool_get_type(), NULL)))
         return NULL;
 
-    gst_video_info_from_caps(&pool->info, caps);
+    /* An allocation query is allowed to carry caps that are not fixed yet, and
+     * gst_video_info_from_caps refuses those. Its failure used to go unread,
+     * which left the info zeroed and offered the decoder a pool advertising a
+     * size of zero: it then waited for a buffer that could never be allocated,
+     * and the application waited on a frame that never arrived. Declining the
+     * pool leaves the allocation to GStreamer's own, which is what happens for
+     * every other caps we do not recognise. */
+    if (!gst_video_info_from_caps(&pool->info, caps))
+    {
+        GST_WARNING("Cannot describe %"GST_PTR_FORMAT", leaving allocation to the default pool.", caps);
+        g_object_unref(pool);
+        return NULL;
+    }
+
     max_size = pool->info.size;
     align_video_info_planes(video_info, plane_align, output_plane_stride, &pool->info, align);
     /* GStreamer assumes NV12 pools must accommodate a stride alignment of 4, but we use 2 */
