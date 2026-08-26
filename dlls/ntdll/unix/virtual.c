@@ -4675,6 +4675,28 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
         err = EXCEPTION_WRITE_FAULT;
     }
 
+#ifdef __aarch64__
+    /* Apple Silicon grants a page read+write or read+exec, never both:
+     * VirtualProtect to PAGE_EXECUTE_READWRITE is refused with ACCESS_DENIED.
+     * Both hacks below re-request write and exec together, which is refused, so
+     * the fault repeats forever and a JIT never runs a single block. Give the
+     * page the half the fault asked for and let the opposite fault flip it
+     * back. */
+    if ((err == EXCEPTION_EXECUTE_FAULT || err == EXCEPTION_WRITE_FAULT) &&
+        ((get_unix_prot( vprot ) & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)))
+    {
+        int prot = PROT_READ | (err == EXCEPTION_EXECUTE_FAULT ? PROT_EXEC : PROT_WRITE);
+
+        if (!mprotect( page, host_page_size, prot ))
+        {
+            ret = STATUS_SUCCESS;
+            goto done;
+        }
+        WARN( "cannot make %p %s: %s\n", page,
+              err == EXCEPTION_EXECUTE_FAULT ? "executable" : "writable", strerror( errno ) );
+    }
+#endif
+
     /* CW Hack 24945 */
     if (err == EXCEPTION_WRITE_FAULT &&
         ((get_unix_prot( vprot ) & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)))
