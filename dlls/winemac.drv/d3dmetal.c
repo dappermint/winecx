@@ -22,7 +22,10 @@
 #pragma makedep unix
 #endif
 
-#if defined(__x86_64__)
+/* The hooks here are what D3DMetal binds to, and D3DMetal is x86_64 only, but
+ * DXMT looks up the same macdrv_functions struct and does run on arm64. Nothing
+ * in this file is architecture specific. */
+#if defined(__x86_64__) || defined(__aarch64__)
 
 #include "config.h"
 
