@@ -12776,6 +12776,10 @@ else case e in #(
 esac
 fi
         ;;
+      aarch64)
+        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+        wine_use_preloader=no
+        ;;
       *)    wine_use_preloader=no ;;
     esac
 

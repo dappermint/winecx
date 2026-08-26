@@ -31,7 +31,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(ntdll);
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__arm64ec__)
 /* Mono's jit compiles Marshal.GetLastWin32Error() to a bare `mov reg,%gs:0x68`
  * instead of a call, so the last error has to be readable straight off %gs.
  * That is free on hosts where %gs is the TEB, but macOS keeps its own thread
