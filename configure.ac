@@ -999,6 +999,12 @@ case $host_os in
             WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-no_pie,-image_base,0x200000000,-no_huge,-no_fixup_chains,-segalign,0x1000,-segaddr,WINE_RESERVE,0x1000,-segaddr,WINE_TOP_DOWN,0x7ff000000000"],
            [wine_use_preloader=yes])
         ;;
+      aarch64)
+        dnl arm64 rejects a custom pagezero outright and its default alignment is already 16K;
+        dnl keep only the info plist, the reserve segments return with FEX wow64 if needed
+        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+        wine_use_preloader=no
+        ;;
       *)    wine_use_preloader=no ;;
     esac
 
