@@ -85,7 +85,6 @@ static BOOL macdrv_surface_flush(struct window_surface *window_surface, const RE
     CGImageAlphaInfo alpha_info = (window_surface->alpha_mask ? kCGImageAlphaPremultipliedFirst : kCGImageAlphaNoneSkipFirst);
     CGColorSpaceRef colorspace;
     CGImageRef image;
-    struct macdrv_win_data *data;
 
     colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     image = CGImageCreate(color_info->bmiHeader.biWidth, abs(color_info->bmiHeader.biHeight), 8, 32,
@@ -121,18 +120,12 @@ static BOOL macdrv_surface_flush(struct window_surface *window_surface, const RE
         }
     }
 
-    /* The window may have been previously drawn with client_surface, for example, when the window
-     * had been a target for a D3D swapchain. Hide the client_view so that it doesn't occlude the
-     * content in the window_surface */
-    if ((data = get_win_data(window_surface->hwnd)))
-    {
-        if (data->client_view)
-        {
-            macdrv_set_view_hidden(data->client_view, TRUE);
-            data->client_view = NULL;
-        }
-        release_win_data(data);
-    }
+    /* Upstream hides and forgets the client_view here, so a window that used to
+     * host a D3D swapchain and now paints through GDI is not occluded by a stale
+     * layer.  We cannot: a child hwnd's view is parented under its toplevel's
+     * client_view, and only a present on the toplevel's own client surface puts
+     * it back.  A game whose swapchain lives on a child window therefore renders
+     * into a permanently hidden layer once anything paints the toplevel. */
 
     return TRUE;
 }
