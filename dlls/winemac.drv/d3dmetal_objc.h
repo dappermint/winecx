@@ -18,7 +18,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#if defined(__x86_64__)
+/* D3DMetal is x86_64 only, but DXMT drives the same client-surface path on
+ * arm64 and needs these presents reported, or wine never un-hides the view. */
+#if defined(__x86_64__) || defined(__aarch64__)
 
 #import <QuartzCore/QuartzCore.h>
 
