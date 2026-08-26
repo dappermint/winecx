@@ -70,6 +70,8 @@
 # include <mach/task.h>
 # include <mach/thread_state.h>
 # include <mach/vm_map.h>
+# include <mach-o/dyld.h>
+# include <mach-o/loader.h>
 #undef host_page_size
 #endif
 
@@ -3661,6 +3663,45 @@ static void *alloc_virtual_heap( SIZE_T size )
     return anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+/***********************************************************************
+ *           free_pagezero
+ *
+ * xnu forces a native arm64 binary to reserve the whole low 4GB as a hard
+ * pagezero, which is exactly where KUSER_SHARED_DATA and the 32-bit guest
+ * address space have to live.  A loader signed with
+ * com.apple.developer.cross-architecture-support is allowed to give it back;
+ * without the entitlement the deallocate fails and nothing below 4GB is ever
+ * mappable.  There is no preloader on this arch to do it earlier.
+ */
+static void free_pagezero(void)
+{
+    const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header( 0 );
+    const struct load_command *cmd;
+    unsigned int i;
+
+    if (!header) return;
+    cmd = (const struct load_command *)(header + 1);
+    for (i = 0; i < header->ncmds; i++, cmd = (const struct load_command *)((const char *)cmd + cmd->cmdsize))
+    {
+        const struct segment_command_64 *segment = (const struct segment_command_64 *)cmd;
+        kern_return_t ret;
+
+        if (cmd->cmd != LC_SEGMENT_64) continue;
+        if (strcmp( segment->segname, SEG_PAGEZERO )) continue;
+        if (!segment->vmsize) return;
+
+        ret = mach_vm_deallocate( mach_task_self(), segment->vmaddr, segment->vmsize );
+        if (ret) ERR( "cannot release the %#llx byte pagezero: %d; the loader is missing "
+                      "com.apple.developer.cross-architecture-support\n",
+                      (unsigned long long)segment->vmsize, ret );
+        else TRACE( "released the pagezero, %#llx bytes at %#llx\n",
+                    (unsigned long long)segment->vmsize, (unsigned long long)segment->vmaddr );
+        return;
+    }
+}
+#endif
+
 /***********************************************************************
  *           virtual_init
  */
@@ -3676,6 +3717,10 @@ void virtual_init(void)
     pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
     pthread_mutex_init( &virtual_mutex, &attr );
     pthread_mutexattr_destroy( &attr );
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    free_pagezero();
+#endif
 
 #ifdef __aarch64__
     host_page_size = sysconf( _SC_PAGESIZE );
