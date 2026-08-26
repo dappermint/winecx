@@ -4848,6 +4848,15 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
         KeQueryTickCount( &count );  /* initialize the global KeTickCount */
         NtBuildNumber = NtCurrentTeb()->Peb->OSBuildNumber;
         ntoskrnl_heap = HeapCreate( HEAP_CREATE_ENABLE_EXECUTE, 0, 0 );
+        if (!ntoskrnl_heap)
+        {
+            /* macOS on ARM64 refuses an executable heap outright, and every
+             * ExAllocatePool then allocates from a NULL handle. No driver we
+             * host executes code out of pool memory, so drop the flag rather
+             * than lose the pool. */
+            WARN( "no executable heap, falling back to a plain one\n" );
+            ntoskrnl_heap = HeapCreate( 0, 0, 0 );
+        }
         dpc_call_tls_index = TlsAlloc();
         LdrRegisterDllNotification( 0, ldr_notify_callback, NULL, &ldr_notify_cookie );
         break;
