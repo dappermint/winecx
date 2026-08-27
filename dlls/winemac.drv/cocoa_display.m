@@ -26,9 +26,68 @@
 #import <Metal/Metal.h>
 #endif
 #include <dlfcn.h>
+#include <limits.h>
+#include <unistd.h>
 #include "macdrv_cocoa.h"
 
 #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+
+
+/***********************************************************************
+ *              macdrv_set_metal_shader_cache_path
+ *
+ * Points Metal's own shader cache at a per-process directory.
+ *
+ * Metal latches this the moment the first MTLDevice in the process exists,
+ * and reading the value back latches it too, so it can only be set before
+ * anything has touched Metal at all. That rules out the layer that actually
+ * wants it: by the time a D3D translation layer's DLL is loaded an engine has
+ * had time to create a device, and the layer's own call quietly does nothing.
+ * This driver is the first thing in a Wine process to use Metal, so it is the
+ * only place where the call still takes.
+ *
+ * MTLSetShaderCachePath is private, so it is resolved at run time rather than
+ * linked against: a build that outlives the symbol should lose a cache
+ * directory, not fail to load.
+ *
+ * Returns whether the path was set and reads back as the one asked for.
+ */
+int macdrv_set_metal_shader_cache_path(const char *path)
+{
+    static void (*pMTLSetShaderCachePath)(NSString *);
+    static NSString * (*pMTLGetShaderCachePath)(void);
+    static dispatch_once_t resolve_once;
+
+    dispatch_once(&resolve_once, ^{
+        pMTLSetShaderCachePath = dlsym(RTLD_DEFAULT, "MTLSetShaderCachePath");
+        pMTLGetShaderCachePath = dlsym(RTLD_DEFAULT, "MTLGetShaderCachePath");
+    });
+    if (!pMTLSetShaderCachePath || !pMTLGetShaderCachePath) return FALSE;
+
+@autoreleasepool
+{
+    NSString *requested = [NSString stringWithUTF8String:path];
+
+    if (![requested hasPrefix:@"/"])
+    {
+        char buf[PATH_MAX];
+
+        if (!confstr(_CS_DARWIN_USER_CACHE_DIR, buf, sizeof(buf))) return FALSE;
+        requested = [[NSString stringWithUTF8String:buf] stringByAppendingPathComponent:requested];
+    }
+
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:requested
+                                   withIntermediateDirectories:YES
+                                                    attributes:nil
+                                                         error:NULL])
+        return FALSE;
+
+    pMTLSetShaderCachePath(requested);
+    /* Ask for it back: a device already existing is exactly the case that
+     * cannot be detected any other way. */
+    return [pMTLGetShaderCachePath() isEqualToString:requested];
+}
+}
 
 /* CrossOver Hack #20512 */
 @interface NSScreen (SafeAreaInsetsForOldSDKs)
