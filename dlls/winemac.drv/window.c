@@ -824,15 +824,39 @@ void activate_on_following_focus(void)
 /***********************************************************************
  *              set_app_icon
  */
+/* The icon belongs to one executable, so a launcher that starts other programs
+ * does not hand them its own.  Unset, it applies to everything.
+ */
+static BOOL running_image_is(const char *exe_name)
+{
+    const WCHAR *appname = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
+    const WCHAR *p;
+
+    if ((p = wcsrchr(appname, '/'))) appname = p + 1;
+    if ((p = wcsrchr(appname, '\\'))) appname = p + 1;
+
+    for (; *appname && *exe_name; appname++, exe_name++)
+    {
+        WCHAR left = *appname, right = (unsigned char)*exe_name;
+
+        if (left >= 'A' && left <= 'Z') left += 'a' - 'A';
+        if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
+        if (left != right) return FALSE;
+    }
+    return !*appname && !*exe_name;
+}
+
 static void set_app_icon(void)
 {
     CFArrayRef images = create_app_icon_images();
     CFURLRef icon_url = NULL;
-    const char *icon_path;
+    const char *icon_path, *owner;
 
     /* A host that composes its own icon for the application names it here, and
      * it is preferred over the exe's resource. */
-    if ((icon_path = getenv("WINE_APP_ICON_PATH")) && icon_path[0] == '/')
+    owner = getenv("WINE_APP_IDENTITY_EXE");
+    if ((icon_path = getenv("WINE_APP_ICON_PATH")) && icon_path[0] == '/' &&
+        (!owner || !owner[0] || running_image_is(owner)))
     {
         TRACE("application icon from %s\n", debugstr_a(icon_path));
         icon_url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)icon_path,

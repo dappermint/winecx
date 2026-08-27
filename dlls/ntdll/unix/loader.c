@@ -566,13 +566,46 @@ fail:
  * of the link path is replaced rather than rejected, so a name loses characters
  * rather than the whole override.
  */
+static int ascii_equal_nocase(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++)
+    {
+        char ca = *a, cb = *b;
+
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return 0;
+    }
+    return !*a && !*b;
+}
+
+/* The name belongs to one executable, so a launcher that starts other programs
+ * does not hand them its own.  Unset, it applies to everything, which is what
+ * a caller that only ever runs the one program wants.
+ */
+static int image_is(const char *image_path, const char *exe_name)
+{
+    const char *base = image_path, *p;
+
+    if ((p = strrchr(base, '\\'))) base = p + 1;
+    if ((p = strrchr(base, '/'))) base = p + 1;
+    return ascii_equal_nocase(base, exe_name);
+}
+
 static char *get_app_display_name(const char *image_path)
 {
     const char *name = getenv("WINE_APP_DISPLAY_NAME");
+    const char *owner = getenv("WINE_APP_IDENTITY_EXE");
     char *ret, *p;
 
     if (!name || !name[0] || name[0] == '.' || !(ret = strdup(name)))
         return extract_exe_name(image_path);
+
+    if (owner && owner[0] && !image_is(image_path, owner))
+    {
+        free(ret);
+        return extract_exe_name(image_path);
+    }
 
     for (p = ret; *p; p++)
         if (*p == '/' || (unsigned char)*p < ' ') *p = '_';
