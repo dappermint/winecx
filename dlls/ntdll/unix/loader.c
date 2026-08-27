@@ -484,7 +484,7 @@ static char *extract_exe_name(const char *exe_path)
         exe_name_len = strlen(exe_name);
 
     if (exe_name_len)
-        ret = strdup(exe_name);
+        ret = strndup(exe_name, exe_name_len);
     else
         ret = NULL;
 
