@@ -25,6 +25,9 @@
 #endif
 
 #include "config.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <limits.h>
 
 #include <Security/AuthSession.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -437,6 +440,47 @@ static void load_strings(struct localized_string *str)
 }
 
 
+
+/***********************************************************************
+ *              init_metal_shader_cache
+ *
+ * Gives this process its own Metal shader cache directory, when asked for one.
+ *
+ * WINE_METAL_SHADER_CACHE_DIR names a directory, resolved against the Darwin
+ * per-user cache directory unless it is absolute, under which each process
+ * gets `<exe name>/com.apple.metal`. Unset, nothing happens and Metal keeps
+ * its single shared cache, which is the behaviour every build has had.
+ *
+ * This exists because Metal only accepts the path before the first MTLDevice
+ * in the process, which is earlier than any D3D translation layer can manage;
+ * see macdrv_set_metal_shader_cache_path. Anything that wants to share the
+ * directory only has to agree on the name.
+ */
+static void init_metal_shader_cache(void)
+{
+    const WCHAR *appname, *p;
+    char path[PATH_MAX], name[MAX_PATH];
+    const char *dir;
+    unsigned int i;
+
+    if (!(dir = getenv("WINE_METAL_SHADER_CACHE_DIR")) || !*dir) return;
+
+    appname = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
+    if ((p = wcsrchr(appname, '/'))) appname = p + 1;
+    if ((p = wcsrchr(appname, '\\'))) appname = p + 1;
+
+    /* The name reaches a path, so keep it to characters that cannot change
+     * what that path means. */
+    for (i = 0; i < ARRAY_SIZE(name) - 1 && appname[i]; i++)
+        name[i] = (appname[i] < 0x20 || appname[i] > 0x7e || appname[i] == '/') ? '_' : appname[i];
+    name[i] = 0;
+    if (!i) return;
+
+    snprintf(path, sizeof(path), "%s/%s/com.apple.metal", dir, name);
+    if (!macdrv_set_metal_shader_cache_path(path))
+        WARN("could not set the Metal shader cache path to %s\n", debugstr_a(path));
+}
+
 /***********************************************************************
  *              macdrv_init
  */
@@ -445,6 +489,10 @@ static NTSTATUS macdrv_init(void *arg)
     struct init_params *params = arg;
     SessionAttributeBits attributes;
     OSStatus status;
+
+    /* Before anything else here: Metal will not accept a cache path once any
+     * device exists, and starting the Cocoa app below is enough to make one. */
+    init_metal_shader_cache();
 
     app_icon_callback = params->app_icon_callback;
     app_quit_request_callback = params->app_quit_request_callback;
