@@ -561,9 +561,28 @@ fail:
     return NULL;
 }
 
+/* An executable's file name is often an internal one, so let whatever launched
+ * wine name the application instead.  A character that would change the meaning
+ * of the link path is replaced rather than rejected, so a name loses characters
+ * rather than the whole override.
+ */
+static char *get_app_display_name(const char *image_path)
+{
+    const char *name = getenv("WINE_APP_DISPLAY_NAME");
+    char *ret, *p;
+
+    if (!name || !name[0] || name[0] == '.' || !(ret = strdup(name)))
+        return extract_exe_name(image_path);
+
+    for (p = ret; *p; p++)
+        if (*p == '/' || (unsigned char)*p < ' ') *p = '_';
+
+    return ret;
+}
+
 static void replace_wineloader_path_with_link(char **wineloader_path, const char *image_path)
 {
-    char *app_name = extract_exe_name(image_path);
+    char *app_name = get_app_display_name(image_path);
     if (app_name)
     {
         char *preloader_path = create_preloader_link(*wineloader_path, app_name);
