@@ -2922,12 +2922,14 @@ void macdrv_set_application_icon(CFArrayRef images, CFURLRef urlRef)
         // CrossOver Hack 13440: Get the icon from the passed-in URL if no images
         WineApplicationController* controller = [WineApplicationController sharedController];
         NSImage* image = nil;
-        if (!imageArray && url)
+        if (url)
             image = [[[NSImage alloc] initWithContentsOfURL:url] autorelease];
-        if (imageArray || ![image isValid])
-            [controller setApplicationIconFromCGImageArray:imageArray];
-        else
+        // A file the host named is the icon that matches the desktop, so it wins
+        // over the exe's own resource, which is only reached if it will not load.
+        if (image && [image isValid])
             controller.applicationIcon = image;
+        else
+            [controller setApplicationIconFromCGImageArray:imageArray];
     });
 }
 

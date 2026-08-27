@@ -827,10 +827,23 @@ void activate_on_following_focus(void)
 static void set_app_icon(void)
 {
     CFArrayRef images = create_app_icon_images();
-    if (images)
+    CFURLRef icon_url = NULL;
+    const char *icon_path;
+
+    /* A host that composes its own icon for the application names it here, and
+     * it is preferred over the exe's resource. */
+    if ((icon_path = getenv("WINE_APP_ICON_PATH")) && icon_path[0] == '/')
     {
-        macdrv_set_application_icon(images, NULL);
-        CFRelease(images);
+        TRACE("application icon from %s\n", debugstr_a(icon_path));
+        icon_url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)icon_path,
+                                                           strlen(icon_path), FALSE);
+    }
+
+    if (images || icon_url)
+    {
+        macdrv_set_application_icon(images, icon_url);
+        if (images) CFRelease(images);
+        if (icon_url) CFRelease(icon_url);
     }
     else /* CrossOver Hack 13440: Find an icon from the CrossOver app bundle */
     {
