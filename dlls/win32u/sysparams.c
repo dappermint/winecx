@@ -1746,6 +1746,9 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
     struct gpu_info *vulkan_gpu = NULL, *opengl_gpu = NULL;
     ULONGLONG memory = 0;
+    struct pci_id reported;
+    const char *env;
+    unsigned long id;
     struct gpu *gpu;
     unsigned int i;
     HKEY hkey, subkey;
@@ -1778,9 +1781,20 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     if (!pci_id->vendor && !pci_id->device && vulkan_gpu) pci_id = &vulkan_gpu->pci_id;
     if (!pci_id->vendor && !pci_id->device && opengl_gpu) pci_id = &opengl_gpu->pci_id;
 
+    /* D3DMetal describes its adapter from D3DM_VENDOR_ID, D3DM_DEVICE_ID and
+     * D3DM_DEVICE_DESCRIPTION when they are set. Report the same identity
+     * here, so the DriverVersion and DriverDesc a game reads from the
+     * registry beside that adapter agree with it. This comes after the
+     * Vulkan and OpenGL pairing above, which needs the ids the host has. */
+    reported = *pci_id;
+    if ((env = getenv( "D3DM_VENDOR_ID" )) && (id = strtoul( env, NULL, 16 ))) reported.vendor = id;
+    if ((env = getenv( "D3DM_DEVICE_ID" )) && (id = strtoul( env, NULL, 16 ))) reported.device = id;
+    pci_id = &reported;
+
     name = gpu_device_name( pci_id->vendor, pci_id->device, name );
     if (!strcmp( name, "Wine Adapter" ) && vulkan_gpu) name = vulkan_gpu->name;
     if (!strcmp( name, "Wine Adapter" ) && opengl_gpu) name = opengl_gpu->name;
+    if ((env = getenv( "D3DM_DEVICE_DESCRIPTION" )) && *env) name = env;
     RtlUTF8ToUnicodeN( gpu->name, sizeof(gpu->name) - sizeof(WCHAR), &len, name, strlen( name ) );
 
     snprintf( gpu->path, sizeof(gpu->path), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X\\%08X",
