@@ -475,6 +475,7 @@ DEFINE_SYSCALL(NtOpenKeyTransacted, (HANDLE *key, ACCESS_MASK access, const OBJE
 DEFINE_SYSCALL(NtOpenKeyTransactedEx, (HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, ULONG options, HANDLE transaction))
 DEFINE_SYSCALL(NtOpenKeyedEvent, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr))
 DEFINE_SYSCALL(NtOpenMutant, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr))
+DEFINE_SYSCALL(NtOpenPrivateNamespace, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, const OBJECT_BOUNDARY_DESCRIPTOR *boundary_descriptor))
 DEFINE_SYSCALL(NtOpenProcess, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, const CLIENT_ID *id))
 DEFINE_SYSCALL(NtOpenProcessToken, (HANDLE process, DWORD access, HANDLE *handle))
 DEFINE_SYSCALL(NtOpenProcessTokenEx, (HANDLE process, DWORD access, DWORD attributes, HANDLE *handle))
@@ -537,7 +538,7 @@ DEFINE_SYSCALL(NtReadVirtualMemory, (HANDLE process, const void *addr, void *buf
 DEFINE_SYSCALL(NtRegisterThreadTerminatePort, (HANDLE handle))
 DEFINE_SYSCALL(NtReleaseKeyedEvent, (HANDLE handle, const void *key, BOOLEAN alertable, const LARGE_INTEGER *timeout))
 DEFINE_SYSCALL(NtReleaseMutant, (HANDLE handle, LONG *prev_count))
-DEFINE_SYSCALL(NtReleaseSemaphore, (HANDLE handle, ULONG count, ULONG *previous))
+DEFINE_SYSCALL(NtReleaseSemaphore, (HANDLE handle, LONG count, ULONG *previous))
 DEFINE_SYSCALL(NtRemoveIoCompletion, (HANDLE handle, ULONG_PTR *key, ULONG_PTR *value, IO_STATUS_BLOCK *io, LARGE_INTEGER *timeout))
 DEFINE_SYSCALL(NtRemoveIoCompletionEx, (HANDLE handle, FILE_IO_COMPLETION_INFORMATION *info, ULONG count, ULONG *written, LARGE_INTEGER *timeout, BOOLEAN alertable))
 DEFINE_SYSCALL(NtRemoveProcessDebug, (HANDLE process, HANDLE debug))
@@ -2146,9 +2147,9 @@ __ASM_GLOBAL_FUNC( "#process_breakpoint",
                    "brk #0xf000\n\t"
                    "ret\n"
                    "process_breakpoint_handler:\n\t"
-                   "ldr x4, [x2, #0x108]\n\t" /* context->Pc */
+                   "ldr x4, [x2, #0xf8]\n\t"  /* context->Rip */
                    "add x4, x4, #4\n\t"
-                   "str x4, [x2, #0x108]\n\t"
+                   "str x4, [x2, #0xf8]\n\t"
                    "mov w0, #0\n\t"           /* ExceptionContinueExecution */
                    "ret" )
 

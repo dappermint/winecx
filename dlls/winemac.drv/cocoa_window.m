@@ -18,7 +18,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "config.h"
+#import "config.h"
+#import "macdrv.h"
 
 #define GL_SILENCE_DEPRECATION
 #import <Metal/Metal.h>
@@ -27,7 +28,6 @@
 
 #import "cocoa_window.h"
 
-#include "macdrv_cocoa.h"
 #import "cocoa_app.h"
 #import "cocoa_event.h"
 #import "cocoa_opengl.h"
@@ -35,6 +35,7 @@
 
 #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
 
+WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
 
 @interface NSWindow (PrivatePreventsActivation)
 
@@ -194,16 +195,6 @@ static inline BOOL stage_manager_enabled(void)
 @end
 
 
-#ifndef MAC_OS_X_VERSION_10_14
-@protocol NSViewLayerContentScaleDelegate <NSObject>
-@optional
-
-    - (BOOL) layer:(CALayer*)layer shouldInheritContentsScale:(CGFloat)newScale fromWindow:(NSWindow*)window;
-
-@end
-#endif
-
-
 @interface CAShapeLayer (WineShapeMaskExtensions)
 
 @property(readonly, nonatomic, getter=isEmptyShaped) BOOL emptyShaped;
@@ -293,7 +284,7 @@ static inline BOOL stage_manager_enabled(void)
 
 @property (nonatomic) BOOL usePerPixelAlpha;
 
-@property (assign, nonatomic) void* himc;
+@property (assign, nonatomic) void* ime_update;
 @property (nonatomic) BOOL commandDone;
 
 @property (readonly, copy, nonatomic) NSArray* childWineWindows;
@@ -467,7 +458,7 @@ static inline BOOL stage_manager_enabled(void)
         for (WineOpenGLContext* context in pendingGlContexts)
         {
             context.needsUpdate = TRUE;
-            macdrv_update_opengl_context((macdrv_opengl_context)context);
+            macdrv_update_opengl_context(context);
         }
         [glContexts addObjectsFromArray:pendingGlContexts];
         [pendingGlContexts removeAllObjects];
@@ -627,22 +618,6 @@ static inline BOOL stage_manager_enabled(void)
         [self layer].contentsScale = mode ? 2.0 : 1.0;
         [self layer].minificationFilter = mode ? kCAFilterLinear : kCAFilterNearest;
         [self layer].magnificationFilter = mode ? kCAFilterLinear : kCAFilterNearest;
-
-        /* On macOS 10.13 and earlier, the desired minificationFilter seems to be
-         * ignored and "nearest" filtering is used, which looks terrible.
-         * Enabling rasterization seems to work around this, only enable
-         * it when there may be down-scaling (retina mode enabled).
-         */
-        if (floor(NSAppKitVersionNumber) < 1671 /*NSAppKitVersionNumber10_14*/)
-        {
-            if (mode)
-            {
-                [self layer].shouldRasterize = YES;
-                [self layer].rasterizationScale = 2.0;
-            }
-            else
-                [self layer].shouldRasterize = NO;
-        }
     }
 
     - (void) setRetinaMode:(BOOL)mode
@@ -707,18 +682,9 @@ static inline BOOL stage_manager_enabled(void)
 
     - (void) completeText:(NSString*)text
     {
-        macdrv_event* event;
         WineWindow* window = (WineWindow*)[self window];
 
-        event = macdrv_create_event(IM_SET_TEXT, window);
-        event->im_set_text.himc = [window himc];
-        event->im_set_text.text = (CFStringRef)[text copy];
-        event->im_set_text.complete = true;
-
-        [[window queue] postEvent:event];
-
-        macdrv_release_event(event);
-
+        macdrv_ime_set_text(window.hwnd, (CFStringRef)text, true, 0, 0, [window ime_update]);
         [self clearMarkedText];
     }
 
@@ -783,7 +749,6 @@ static inline BOOL stage_manager_enabled(void)
 
         if ([string isKindOfClass:[NSString class]])
         {
-            macdrv_event* event;
             WineWindow* window = (WineWindow*)[self window];
 
             if (replacementRange.location == NSNotFound)
@@ -793,16 +758,10 @@ static inline BOOL stage_manager_enabled(void)
             markedTextSelection = selectedRange;
             markedTextSelection.location += replacementRange.location;
 
-            event = macdrv_create_event(IM_SET_TEXT, window);
-            event->im_set_text.himc = [window himc];
-            event->im_set_text.text = (CFStringRef)[[markedText string] copy];
-            event->im_set_text.complete = false;
-            event->im_set_text.cursor_begin = markedTextSelection.location;
-            event->im_set_text.cursor_end = markedTextSelection.location + markedTextSelection.length;
-
-            [[window queue] postEvent:event];
-
-            macdrv_release_event(event);
+            macdrv_ime_set_text(window.hwnd, (CFStringRef)[markedText string], false,
+                                markedTextSelection.location,
+                                markedTextSelection.location + markedTextSelection.length,
+                                [window ime_update]);
 
             [[self inputContext] invalidateCharacterCoordinates];
         }
@@ -930,7 +889,7 @@ static inline BOOL stage_manager_enabled(void)
     @synthesize drawnSinceShown;
     @synthesize shapeChangedSinceLastDraw;
     @synthesize usePerPixelAlpha;
-    @synthesize himc, commandDone;
+    @synthesize ime_update, commandDone;
     @synthesize contentViewMaskLayer;
 
     + (WineWindow*) createWindowWithFeatures:(const struct macdrv_window_features*)wf
@@ -1205,7 +1164,7 @@ static inline BOOL stage_manager_enabled(void)
     {
         macdrv_query* query = macdrv_create_query();
         query->type = QUERY_RESIZE_START;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
 
         [self.queue query:query timeout:0.3];
         macdrv_release_query(query);
@@ -1458,7 +1417,7 @@ static inline BOOL stage_manager_enabled(void)
                         reordered = TRUE;
                     }
                     else
-                        ERR(@"shouldn't happen: %@ thinks %@ is a latent child, but it doesn't agree\n", self, child);
+                        ERR("shouldn't happen: %s thinks %s is a latent child, but it doesn't agree\n", debugstr_cf(self), debugstr_cf(child));
                     [indexesToRemove addIndex:i];
                 }
             }
@@ -1661,7 +1620,7 @@ static inline BOOL stage_manager_enabled(void)
             if (activate)
                 [controller tryToActivateIgnoringOtherApps:YES];
 
-            NSDisableScreenUpdates();
+            [NSAnimationContext beginGrouping];
 
             if ([self becameEligibleParentOrChild])
                 needAdjustWindowLevels = TRUE;
@@ -1748,7 +1707,7 @@ static inline BOOL stage_manager_enabled(void)
                 pendingMinimize = FALSE;
             }
 
-            NSEnableScreenUpdates();
+            [NSAnimationContext endGrouping];
 
             /* Cocoa may adjust the frame when the window is ordered onto the screen.
                Generate a frame-changed event just in case.  The back end will ignore
@@ -1882,7 +1841,7 @@ static inline BOOL stage_manager_enabled(void)
             if (!NSEqualRects(frame, oldFrame))
             {
                 BOOL equalSizes = NSEqualSizes(frame.size, oldFrame.size);
-                BOOL needEnableScreenUpdates = FALSE;
+                BOOL needAnimationContextEndGrouping = NO;
 
                 if ([self preventResizing])
                 {
@@ -1903,8 +1862,8 @@ static inline BOOL stage_manager_enabled(void)
                     NSRect bogusFrame = frame;
                     bogusFrame.size.width++;
 
-                    NSDisableScreenUpdates();
-                    needEnableScreenUpdates = TRUE;
+                    [NSAnimationContext beginGrouping];
+                    needAnimationContextEndGrouping = YES;
 
                     ignore_windowResize = TRUE;
                     [self setFrame:bogusFrame display:NO];
@@ -1918,8 +1877,8 @@ static inline BOOL stage_manager_enabled(void)
                     [self setContentMaxSize:contentRect.size];
                 }
 
-                if (needEnableScreenUpdates)
-                    NSEnableScreenUpdates();
+                if (needAnimationContextEndGrouping)
+                    [NSAnimationContext endGrouping];
 
                 if (!enteringFullScreen &&
                     [[NSProcessInfo processInfo] systemUptime] - enteredFullScreenTime > 1.0)
@@ -2807,7 +2766,7 @@ static inline BOOL stage_manager_enabled(void)
 
         query = macdrv_create_query();
         query->type = QUERY_MIN_MAX_INFO;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         [self.queue query:query timeout:0.5];
         macdrv_release_query(query);
 
@@ -3052,7 +3011,7 @@ static inline BOOL stage_manager_enabled(void)
 
             query = macdrv_create_query();
             query->type = QUERY_RESIZE_SIZE;
-            query->window = (macdrv_window)[self retain];
+            query->window = [self retain];
             query->resize_size.rect = cgrect_win_from_mac(NSRectToCGRect(rect));
             query->resize_size.from_left = resizingFromLeft;
             query->resize_size.from_top = resizingFromTop;
@@ -3102,7 +3061,7 @@ static inline BOOL stage_manager_enabled(void)
 
         query = macdrv_create_query();
         query->type = QUERY_MIN_MAX_INFO;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         [self.queue query:query timeout:0.5];
         macdrv_release_query(query);
 
@@ -3143,7 +3102,7 @@ static inline BOOL stage_manager_enabled(void)
     {
         macdrv_query* query = macdrv_create_query();
         query->type = QUERY_PASTEBOARD_DATA;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         query->pasteboard_data.type = (CFStringRef)[type copy];
 
         [self.queue query:query timeout:3];
@@ -3167,7 +3126,7 @@ static inline BOOL stage_manager_enabled(void)
         NSPasteboard* pb = [sender draggingPasteboard];
 
         query->type = QUERY_DRAG_DROP_ENTER;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         query->drag_drop.pasteboard = (CFTypeRef)[pb retain];
 
         [self.queue query:query timeout:0.1];
@@ -3183,7 +3142,7 @@ static inline BOOL stage_manager_enabled(void)
         // queries in order to maintain the proper order of operations.
         macdrv_query* query = macdrv_create_query();
         query->type = QUERY_DRAG_DROP_LEAVE;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
 
         [self.queue query:query timeout:0.1];
         macdrv_release_query(query);
@@ -3197,7 +3156,7 @@ static inline BOOL stage_manager_enabled(void)
 
         macdrv_query* query = macdrv_create_query();
         query->type = QUERY_DRAG_DROP_DRAG;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         query->drag_drop.x = floor(cgpt.x);
         query->drag_drop.y = floor(cgpt.y);
         query->drag_drop.ops = [sender draggingSourceOperationMask];
@@ -3217,7 +3176,7 @@ static inline BOOL stage_manager_enabled(void)
 
         macdrv_query* query = macdrv_create_query();
         query->type = QUERY_DRAG_DROP_DROP;
-        query->window = (macdrv_window)[self retain];
+        query->window = [self retain];
         query->drag_drop.x = floor(cgpt.x);
         query->drag_drop.y = floor(cgpt.y);
         query->drag_drop.ops = [sender draggingSourceOperationMask];
@@ -3243,8 +3202,8 @@ static inline BOOL stage_manager_enabled(void)
  * Create a Cocoa window with the given content frame and features (e.g.
  * title bar, close box, etc.).
  */
-macdrv_window macdrv_create_cocoa_window(const struct macdrv_window_features* wf,
-        CGRect frame, void* hwnd, macdrv_event_queue queue)
+WineWindow *macdrv_create_cocoa_window(const struct macdrv_window_features* wf,
+        CGRect frame, void* hwnd, WineEventQueue *queue)
 {
     __block WineWindow* window;
 
@@ -3252,10 +3211,10 @@ macdrv_window macdrv_create_cocoa_window(const struct macdrv_window_features* wf
         window = [[WineWindow createWindowWithFeatures:wf
                                            windowFrame:NSRectFromCGRect(cgrect_mac_from_win(frame))
                                                   hwnd:hwnd
-                                                 queue:(WineEventQueue*)queue] retain];
+                                                 queue:queue] retain];
     });
 
-    return (macdrv_window)window;
+    return window;
 }
 
 /***********************************************************************
@@ -3263,12 +3222,10 @@ macdrv_window macdrv_create_cocoa_window(const struct macdrv_window_features* wf
  *
  * Destroy a Cocoa window.
  */
-void macdrv_destroy_cocoa_window(macdrv_window w)
+void macdrv_destroy_cocoa_window(WineWindow *window)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         window.closing = TRUE;
         [window doOrderOut];
@@ -3284,9 +3241,8 @@ void macdrv_destroy_cocoa_window(macdrv_window w)
  *
  * Get the hwnd that was set for the window at creation.
  */
-void* macdrv_get_window_hwnd(macdrv_window w)
+void* macdrv_get_window_hwnd(WineWindow *window)
 {
-    WineWindow* window = (WineWindow*)w;
     return window.hwnd;
 }
 
@@ -3295,11 +3251,9 @@ void* macdrv_get_window_hwnd(macdrv_window w)
  *
  * Update a Cocoa window's features.
  */
-void macdrv_set_cocoa_window_features(macdrv_window w,
+void macdrv_set_cocoa_window_features(WineWindow *window,
         const struct macdrv_window_features* wf)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setWindowFeatures:wf];
     });
@@ -3310,11 +3264,9 @@ void macdrv_set_cocoa_window_features(macdrv_window w,
  *
  * Update a Cocoa window's state.
  */
-void macdrv_set_cocoa_window_state(macdrv_window w,
+void macdrv_set_cocoa_window_state(WineWindow *window,
         const struct macdrv_window_state* state)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setMacDrvState:state];
     });
@@ -3325,12 +3277,11 @@ void macdrv_set_cocoa_window_state(macdrv_window w,
  *
  * Set a Cocoa window's title.
  */
-void macdrv_set_cocoa_window_title(macdrv_window w, const unsigned short* title,
+void macdrv_set_cocoa_window_title(WineWindow *window, const unsigned short* title,
         size_t length)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
     NSString* titleString;
 
     if (title)
@@ -3353,13 +3304,9 @@ void macdrv_set_cocoa_window_title(macdrv_window w, const unsigned short* title,
  * it is ordered above that window.  Otherwise, it is ordered to the
  * front.
  */
-void macdrv_order_cocoa_window(macdrv_window w, macdrv_window p,
-        macdrv_window n, bool activate)
+void macdrv_order_cocoa_window(WineWindow *window, WineWindow *prev,
+        WineWindow *next, bool activate)
 {
-    WineWindow* window = (WineWindow*)w;
-    WineWindow* prev = (WineWindow*)p;
-    WineWindow* next = (WineWindow*)n;
-
     OnMainThreadAsync(^{
         [window orderBelow:prev
                    orAbove:next
@@ -3376,10 +3323,8 @@ void macdrv_order_cocoa_window(macdrv_window w, macdrv_window p,
  *
  * Hides a Cocoa window.
  */
-void macdrv_hide_cocoa_window(macdrv_window w)
+void macdrv_hide_cocoa_window(WineWindow *window)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window doOrderOut];
     });
@@ -3390,10 +3335,8 @@ void macdrv_hide_cocoa_window(macdrv_window w)
  *
  * Move a Cocoa window.
  */
-void macdrv_set_cocoa_window_frame(macdrv_window w, const CGRect* new_frame)
+void macdrv_set_cocoa_window_frame(WineWindow *window, const CGRect* new_frame)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setFrameFromWine:NSRectFromCGRect(cgrect_mac_from_win(*new_frame))];
     });
@@ -3404,10 +3347,8 @@ void macdrv_set_cocoa_window_frame(macdrv_window w, const CGRect* new_frame)
  *
  * Gets the frame of a Cocoa window.
  */
-void macdrv_get_cocoa_window_frame(macdrv_window w, CGRect* out_frame)
+void macdrv_get_cocoa_window_frame(WineWindow *window, CGRect* out_frame)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         NSRect frame;
 
@@ -3423,12 +3364,10 @@ void macdrv_get_cocoa_window_frame(macdrv_window w, CGRect* out_frame)
  * Sets the parent window for a Cocoa window.  If parent is NULL, clears
  * the parent window.
  */
-void macdrv_set_cocoa_parent_window(macdrv_window w, macdrv_window parent)
+void macdrv_set_cocoa_parent_window(WineWindow *window, WineWindow *parent)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
-        [window setMacDrvParentWindow:(WineWindow*)parent];
+        [window setMacDrvParentWindow:parent];
     });
 }
 
@@ -3439,12 +3378,10 @@ void macdrv_set_cocoa_parent_window(macdrv_window w, macdrv_window parent)
  * Push a window surface color pixel update in a specified rect (in non-client
  * area coordinates).
  */
-void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rect, CGRect dirty)
+void macdrv_window_set_color_image(WineWindow *window, CGImageRef image, CGRect rect, CGRect dirty)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     CGImageRetain(image);
 
     OnMainThreadAsync(^{
@@ -3463,12 +3400,10 @@ void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rec
 /***********************************************************************
  *              macdrv_window_set_shape_image
  */
-void macdrv_window_set_shape_image(macdrv_window w, CGImageRef image)
+void macdrv_window_set_shape_image(WineWindow *window, CGImageRef image)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     CGImageRetain(image);
 
     OnMainThreadAsync(^{
@@ -3489,12 +3424,10 @@ void macdrv_window_set_shape_image(macdrv_window w, CGImageRef image)
  * Sets the shape of a Cocoa window from an array of rectangles.  If
  * rects is NULL, resets the window's shape to its frame.
  */
-void macdrv_set_window_shape(macdrv_window w, const CGRect *rects, int count)
+void macdrv_set_window_shape(WineWindow *window, const CGRect *rects, int count)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         if (!rects || !count)
         {
@@ -3519,12 +3452,10 @@ void macdrv_set_window_shape(macdrv_window w, const CGRect *rects, int count)
 /***********************************************************************
  *              macdrv_set_window_alpha
  */
-void macdrv_set_window_alpha(macdrv_window w, CGFloat alpha)
+void macdrv_set_window_alpha(WineWindow *window, CGFloat alpha)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setAlphaValue:alpha];
     });
@@ -3534,12 +3465,10 @@ void macdrv_set_window_alpha(macdrv_window w, CGFloat alpha)
 /***********************************************************************
  *              macdrv_window_use_per_pixel_alpha
  */
-void macdrv_window_use_per_pixel_alpha(macdrv_window w, bool use_per_pixel_alpha)
+void macdrv_window_use_per_pixel_alpha(WineWindow *window, bool use_per_pixel_alpha)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         window.usePerPixelAlpha = use_per_pixel_alpha;
         [window checkTransparency];
@@ -3550,12 +3479,10 @@ void macdrv_window_use_per_pixel_alpha(macdrv_window w, bool use_per_pixel_alpha
 /***********************************************************************
  *              macdrv_set_window_mask
  */
-void macdrv_set_window_mask(macdrv_window w, CGRect rect)
+void macdrv_set_window_mask(WineWindow *window, CGRect rect)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setMask:rect];
     });
@@ -3569,10 +3496,8 @@ void macdrv_set_window_mask(macdrv_window w, CGRect rect)
  * orders it front and, if its frame was not within the desktop bounds,
  * Cocoa will typically move it on-screen.
  */
-void macdrv_give_cocoa_window_focus(macdrv_window w, bool activate)
+void macdrv_give_cocoa_window_focus(WineWindow *window, bool activate)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window makeFocused:activate];
     });
@@ -3583,10 +3508,8 @@ void macdrv_give_cocoa_window_focus(macdrv_window w, bool activate)
  *
  * Sets the window's minimum and maximum content sizes.
  */
-void macdrv_set_window_min_max_sizes(macdrv_window w, CGSize min_size, CGSize max_size)
+void macdrv_set_window_min_max_sizes(WineWindow *window, CGSize min_size, CGSize max_size)
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         [window setWineMinSize:NSSizeFromCGSize(cgsize_mac_from_win(min_size)) maxSize:NSSizeFromCGSize(cgsize_mac_from_win(max_size))];
     });
@@ -3599,7 +3522,7 @@ void macdrv_set_window_min_max_sizes(macdrv_window w, CGSize min_size, CGSize ma
  * caller is responsible for calling macdrv_dispose_view() on the view
  * when it is done with it.
  */
-macdrv_view macdrv_create_view(CGRect rect)
+WineContentView *macdrv_create_view(CGRect rect)
 {
 @autoreleasepool
 {
@@ -3627,7 +3550,7 @@ macdrv_view macdrv_create_view(CGRect rect)
                  object:NSApp];
     });
 
-    return (macdrv_view)view;
+    return view;
 }
 }
 
@@ -3636,12 +3559,10 @@ macdrv_view macdrv_create_view(CGRect rect)
  *
  * Destroys a view previously returned by macdrv_create_view.
  */
-void macdrv_dispose_view(macdrv_view v)
+void macdrv_dispose_view(WineContentView *view)
 {
 @autoreleasepool
 {
-    WineContentView* view = (WineContentView*)v;
-
     OnMainThread(^{
         NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
         WineWindow* window = (WineWindow*)[view window];
@@ -3665,12 +3586,10 @@ void macdrv_dispose_view(macdrv_view v)
 /***********************************************************************
  *              macdrv_set_view_frame
  */
-void macdrv_set_view_frame(macdrv_view v, CGRect rect)
+void macdrv_set_view_frame(WineContentView *view, CGRect rect)
 {
 @autoreleasepool
 {
-    WineContentView* view = (WineContentView*)v;
-
     if (CGRectIsNull(rect)) rect = CGRectZero;
 
     OnMainThreadAsync(^{
@@ -3702,16 +3621,12 @@ void macdrv_set_view_frame(macdrv_view v, CGRect rect)
  * Otherwise, the view is ordered above n.  If s is NULL, use the
  * content view of w as the new superview.
  */
-void macdrv_set_view_superview(macdrv_view v, macdrv_view s, macdrv_window w, macdrv_view p, macdrv_view n)
+void macdrv_set_view_superview(WineContentView *view, WineContentView *parent, WineWindow *window, WineContentView *prev, WineContentView *next)
 {
 @autoreleasepool
 {
     OnMainThreadAsync(^{
-        WineContentView* view = (WineContentView*)v;
-        WineContentView* superview = (WineContentView*)s;
-        WineWindow* window = (WineWindow*)w;
-        WineContentView* prev = (WineContentView*)p;
-        WineContentView* next = (WineContentView*)n;
+        WineContentView* superview = parent;
 
         if (!superview)
             superview = [window contentView];
@@ -3748,12 +3663,10 @@ void macdrv_set_view_superview(macdrv_view v, macdrv_view s, macdrv_window w, ma
 /***********************************************************************
  *              macdrv_set_view_hidden
  */
-void macdrv_set_view_hidden(macdrv_view v, bool hidden)
+void macdrv_set_view_hidden(WineContentView *view, bool hidden)
 {
 @autoreleasepool
 {
-    WineContentView* view = (WineContentView*)v;
-
     OnMainThreadAsync(^{
         [view setHidden:hidden];
         [(WineWindow*)view.window updateForGLSubviews];
@@ -3766,13 +3679,10 @@ void macdrv_set_view_hidden(macdrv_view v, bool hidden)
  *
  * Add an OpenGL context to the list being tracked for each view.
  */
-void macdrv_add_view_opengl_context(macdrv_view v, macdrv_opengl_context c)
+void macdrv_add_view_opengl_context(WineContentView *view, WineOpenGLContext *context)
 {
 @autoreleasepool
 {
-    WineContentView* view = (WineContentView*)v;
-    WineOpenGLContext *context = (WineOpenGLContext*)c;
-
     OnMainThread(^{
         [view addGLContext:context];
     });
@@ -3784,63 +3694,56 @@ void macdrv_add_view_opengl_context(macdrv_view v, macdrv_opengl_context c)
  *
  * Add an OpenGL context to the list being tracked for each view.
  */
-void macdrv_remove_view_opengl_context(macdrv_view v, macdrv_opengl_context c)
+void macdrv_remove_view_opengl_context(WineContentView *view, WineOpenGLContext *context)
 {
 @autoreleasepool
 {
-    WineContentView* view = (WineContentView*)v;
-    WineOpenGLContext *context = (WineOpenGLContext*)c;
-
     OnMainThreadAsync(^{
         [view removeGLContext:context];
     });
 }
 }
 
-macdrv_metal_device macdrv_create_metal_device(void)
+id<MTLDevice> macdrv_create_metal_device(void)
 {
 @autoreleasepool
 {
-    return (macdrv_metal_device)MTLCreateSystemDefaultDevice();
+    return MTLCreateSystemDefaultDevice();
 }
 }
 
-void macdrv_release_metal_device(macdrv_metal_device d)
+void macdrv_release_metal_device(id<MTLDevice> device)
 {
 @autoreleasepool
 {
-    [(id<MTLDevice>)d release];
+    [device release];
 }
 }
 
-macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_device d)
+WineMetalView *macdrv_view_create_metal_view(WineContentView *view, id<MTLDevice> device)
 {
-    id<MTLDevice> device = (id<MTLDevice>)d;
-    WineContentView* view = (WineContentView*)v;
     __block WineMetalView *metalView;
 
     OnMainThread(^{
         metalView = [view newMetalViewWithDevice:device];
     });
 
-    return (macdrv_metal_view)metalView;
+    return metalView;
 }
 
-macdrv_metal_layer macdrv_view_get_metal_layer(macdrv_metal_view v)
+CAMetalLayer *macdrv_view_get_metal_layer(WineMetalView *view)
 {
-    WineMetalView* view = (WineMetalView*)v;
     __block CAMetalLayer* layer;
 
     OnMainThread(^{
         layer = (CAMetalLayer*)view.layer;
     });
 
-    return (macdrv_metal_layer)layer;
+    return layer;
 }
 
-void macdrv_view_release_metal_view(macdrv_metal_view v)
+void macdrv_view_release_metal_view(WineMetalView *view)
 {
-    WineMetalView* view = (WineMetalView*)v;
     OnMainThread(^{
         [view removeFromSuperview];
         [view release];
@@ -3855,17 +3758,17 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
 
 @interface MetalViewSwapChain : NSObject <WineMetalSwapChain>
 {
-    macdrv_metal_device device;
-    macdrv_metal_view metal_view;
+    id<MTLDevice> device;
+    WineMetalView *metal_view;
 }
 
-- (instancetype) initWithView:(macdrv_view)view;
+- (instancetype) initWithView:(WineContentView *)view;
 
 @end
 
 @implementation MetalViewSwapChain
 
-- (instancetype) initWithView:(macdrv_view)view
+- (instancetype) initWithView:(WineContentView *)view
 {
     self = [super init];
     if (!self) return nil;
@@ -3903,7 +3806,7 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
 {
     void* hwnd;
     void* client_hwnd;
-    macdrv_metal_device device;
+    id<MTLDevice> device;
     CALayer* container_layer;
     CAMetalLayer* offscreen_layer;
     CAContext* remote_context;
@@ -4002,7 +3905,7 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
     CAContext *context = remote_context;
     CALayer *container = container_layer;
     CAMetalLayer *layer = offscreen_layer;
-    macdrv_metal_device dev = device;
+    id<MTLDevice> dev = device;
 
     OnMainThreadAsync(^{
         [context setLayer:nil];
@@ -4017,36 +3920,33 @@ void macdrv_view_release_metal_view(macdrv_metal_view v)
 
 @end
 
-macdrv_metal_swapchain macdrv_create_view_swapchain(macdrv_view v)
+id<WineMetalSwapChain> macdrv_create_view_swapchain(WineContentView *view)
 {
-    return (macdrv_metal_swapchain)[[MetalViewSwapChain alloc] initWithView:v];
+    return [[MetalViewSwapChain alloc] initWithView:view];
 }
 
-macdrv_metal_swapchain macdrv_create_offscreen_swapchain(void* hwnd, void* client_hwnd, CGRect container, CGRect frame)
+id<WineMetalSwapChain> macdrv_create_offscreen_swapchain(void* hwnd, void* client_hwnd, CGRect container, CGRect frame)
 {
-    return (macdrv_metal_swapchain)[[CAContextSwapChain alloc] initWithHwnd:hwnd
-                                                                     client:client_hwnd
-                                                                  container:container
-                                                                      frame:frame];
+    return [[CAContextSwapChain alloc] initWithHwnd:hwnd
+                                             client:client_hwnd
+                                          container:container
+                                              frame:frame];
 }
 
-macdrv_metal_layer macdrv_swapchain_get_layer(macdrv_metal_swapchain swapchain)
+CAMetalLayer *macdrv_swapchain_get_layer(id<WineMetalSwapChain> swapchain)
 {
-    return (macdrv_metal_layer)[(id<WineMetalSwapChain>)swapchain layer];
+    return [swapchain layer];
 }
 
-
-void macdrv_destroy_swapchain(macdrv_metal_swapchain swapchain)
+void macdrv_destroy_swapchain(id<WineMetalSwapChain> swapchain)
 {
-    [(id<WineMetalSwapChain>)swapchain release];
+    [swapchain release];
 }
 
-void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int context_id)
+void macdrv_window_create_ca_layer_host_view(WineWindow *window, unsigned int context_id)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         NSView* content_view = [window contentView];
 
@@ -4056,12 +3956,10 @@ void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int conte
 }
 }
 
-void macdrv_window_set_ca_layer_host_state(macdrv_window w, unsigned int context_id, int hidden, double zpos)
+void macdrv_window_set_ca_layer_host_state(WineWindow *window, unsigned int context_id, int hidden, double zpos)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThreadAsync(^{
         NSView* content_view = [window contentView];
 
@@ -4071,7 +3969,7 @@ void macdrv_window_set_ca_layer_host_state(macdrv_window w, unsigned int context
 }
 }
 
-void macdrv_swapchain_set_frame(macdrv_metal_swapchain swapchain, CGRect container, CGRect frame)
+void macdrv_swapchain_set_frame(id<WineMetalSwapChain> swapchain, CGRect container, CGRect frame)
 {
     id chain = (id)swapchain;
 
@@ -4079,12 +3977,10 @@ void macdrv_swapchain_set_frame(macdrv_metal_swapchain swapchain, CGRect contain
         [chain setContainer:container frame:frame];
 }
 
-void macdrv_window_release_ca_layer_host_view(macdrv_window w, unsigned int context_id)
+void macdrv_window_release_ca_layer_host_view(WineWindow *window, unsigned int context_id)
 {
 @autoreleasepool
 {
-    WineWindow* window = (WineWindow*)w;
-
     OnMainThread(^{
         NSView* content_view = [window contentView];
 
@@ -4094,10 +3990,8 @@ void macdrv_window_release_ca_layer_host_view(macdrv_window w, unsigned int cont
 }
 }
 
-bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2])
+bool macdrv_get_view_backing_size(WineContentView *view, int backing_size[2])
 {
-    WineContentView* view = (WineContentView*)v;
-
     if (![view isKindOfClass:[WineContentView class]])
         return false;
 
@@ -4105,10 +3999,8 @@ bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2])
     return true;
 }
 
-void macdrv_set_view_backing_size(macdrv_view v, const int backing_size[2])
+void macdrv_set_view_backing_size(WineContentView *view, const int backing_size[2])
 {
-    WineContentView* view = (WineContentView*)v;
-
     if ([view isKindOfClass:[WineContentView class]])
         [view wine_setBackingSize:backing_size];
 }
@@ -4179,7 +4071,7 @@ uint32_t macdrv_window_background_color(void)
  * processed by input sources (AKA IMEs). This is only called when there is an
  * active non-keyboard input source.
  */
-bool macdrv_send_keydown_to_input_source(int keyc, unsigned int flags, int repeat, void *himc)
+bool macdrv_send_keydown_to_input_source(int keyc, unsigned int flags, int repeat, void *update)
 {
     __block bool ret;
 
@@ -4198,7 +4090,7 @@ bool macdrv_send_keydown_to_input_source(int keyc, unsigned int flags, int repea
             CGEventRef c;
             NSEvent* event;
 
-            window.himc = himc;
+            window.ime_update = update;
             fix_device_modifiers_by_generic(&localFlags);
 
             // An NSEvent created with +keyEventWithType:... is internally marked
@@ -4212,6 +4104,7 @@ bool macdrv_send_keydown_to_input_source(int keyc, unsigned int flags, int repea
 
             window.commandDone = FALSE;
             ret = [[[window contentView] inputContext] handleEvent:event] && !window.commandDone;
+            window.ime_update = NULL;
         }
         else
             ret = false;

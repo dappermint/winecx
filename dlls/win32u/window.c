@@ -394,12 +394,12 @@ void update_client_surfaces( HWND hwnd )
     pthread_mutex_unlock( &surfaces_lock );
 }
 
-void *client_surface_create( UINT size, const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw )
+void *client_surface_create( const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw )
 {
     HWND toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
     struct client_surface *surface;
 
-    if (!(surface = calloc( 1, size ))) return NULL;
+    if (!(surface = calloc( 1, funcs->size ))) return NULL;
     surface->funcs = funcs;
     surface->ref = 1;
     surface->hwnd = hwnd;
@@ -448,6 +448,18 @@ void client_surface_update( struct client_surface *surface )
     pthread_mutex_lock( &surfaces_lock );
     if (surface->hwnd) client_surface_update_locked( surface );
     pthread_mutex_unlock( &surfaces_lock );
+}
+
+BOOL client_surface_set_color_space( struct client_surface *surface, VkColorSpaceKHR color_space )
+{
+    BOOL ret;
+
+    pthread_mutex_lock( &surfaces_lock );
+    if (!surface->hwnd || !surface->funcs->set_color_space) ret = FALSE;
+    else ret = surface->funcs->set_color_space( surface, color_space );
+    pthread_mutex_unlock( &surfaces_lock );
+
+    return ret;
 }
 
 BOOL client_surface_get_size( struct client_surface *surface, SIZE *virtual_size, SIZE *monitor_size )
@@ -4624,7 +4636,7 @@ MINMAXINFO get_min_max_info( HWND hwnd )
 
     minmax.ptMaxSize.x = rc.right - rc.left;
     minmax.ptMaxSize.y = rc.bottom - rc.top;
-    if (style & (WS_DLGFRAME | WS_BORDER))
+    if (style & (WS_DLGFRAME | WS_BORDER) && !(exstyle &  WS_EX_TOOLWINDOW))
     {
         minmax.ptMinTrackSize.x = get_system_metrics( SM_CXMINTRACK );
         minmax.ptMinTrackSize.y = get_system_metrics( SM_CYMINTRACK );
