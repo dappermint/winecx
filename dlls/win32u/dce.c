@@ -809,9 +809,10 @@ static void shm_surface_destroy( struct window_surface *window_surface )
 
 static const struct window_surface_funcs shm_surface_funcs =
 {
-    shm_surface_set_clip,
-    shm_surface_flush,
-    shm_surface_destroy,
+    .size = sizeof(struct shm_window_surface),
+    .set_clip = shm_surface_set_clip,
+    .flush = shm_surface_flush,
+    .destroy = shm_surface_destroy,
 };
 
 struct window_surface *create_shm_surface( HWND window, HWND parent, const RECT *visible_rect,
@@ -872,7 +873,7 @@ struct window_surface *create_shm_surface( HWND window, HWND parent, const RECT 
         return NULL;
     }
 
-    surface = (struct shm_window_surface *)window_surface_create( sizeof(*surface), &shm_surface_funcs, window, &r, &info, bitmap );
+    surface = (struct shm_window_surface *)window_surface_create( &shm_surface_funcs, window, &r, &info, bitmap );
     surface->info = info;
 
     TRACE( "crating surface %p for visible_rect %s of window %p\n", surface,
