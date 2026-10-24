@@ -3884,6 +3884,10 @@ void macdrv_view_release_metal_view(WineMetalView *view)
     CALayer* c = container_layer;
     CAMetalLayer* o = offscreen_layer;
 
+    /* win32 rects are backing pixels in retina mode, layer geometry is points */
+    container = cgrect_mac_from_win(container);
+    frame = cgrect_mac_from_win(frame);
+
     /* no implicit animation, a resize must land in one frame */
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -3892,6 +3896,9 @@ void macdrv_view_release_metal_view(WineMetalView *view)
     o.bounds = CGRectMake(0, 0, CGRectGetWidth(frame), CGRectGetHeight(frame));
     o.position = CGPointMake(CGRectGetMinX(frame), CGRectGetMinY(frame));
     [CATransaction commit];
+    /* the presenting thread has no run loop, so nothing commits the implicit
+     * transaction this nests in unless it is flushed */
+    [CATransaction flush];
 }
 
 - (CAMetalLayer*) layer
