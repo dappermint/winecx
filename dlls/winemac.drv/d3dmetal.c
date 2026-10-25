@@ -311,7 +311,7 @@ static LSTATUS WINAPI my_RegCreateKeyExA(HKEY p1, LPCSTR p2, DWORD p3, LPSTR p4,
     return result;
 }
 
-static LSTATUS WINAPI DECLSPEC_HOTPATCH RegCloseKey( HKEY hkey )
+static LSTATUS WINAPI DECLSPEC_HOTPATCH d3dm_RegCloseKey( HKEY hkey )
 {
     if (!hkey) return ERROR_INVALID_HANDLE;
     if (hkey >= (HKEY)0x80000000) return ERROR_SUCCESS;
@@ -321,7 +321,7 @@ static LSTATUS WINAPI DECLSPEC_HOTPATCH RegCloseKey( HKEY hkey )
 static LSTATUS WINAPI my_RegCloseKey(HKEY hkey)
 {
     TRACE("RegCloseKey %p\n", hkey);
-    return RegCloseKey(hkey);
+    return d3dm_RegCloseKey(hkey);
 }
 
 static BOOL WINAPI my_EnumDisplayMonitors(HDC h, LPRECT p2, MONITORENUMPROC p3, LPARAM p4)
