@@ -3435,7 +3435,9 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
         return status;
     }
 
-    if (peb->OSMajorVersion > 5 && /* CW HACK 22939: ASLR is supported only on Windows Vista and later */
+    /* CW HACK 22939: ASLR is supported only on Windows Vista and later.
+     * The first exe and its builtins are mapped before the peb exists. */
+    if ((!peb || peb->OSMajorVersion > 5) &&
         !pe_mapping->image.map_addr &&
         (pe_mapping->image.image_charact & IMAGE_FILE_DLL) &&
         (pe_mapping->image.image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
