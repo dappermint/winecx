@@ -2219,7 +2219,6 @@ static void start_main_thread(void)
 {
     struct thread_data *data = virtual_alloc_first_thread_data();
 
-    dbg_init();
     server_init_process( data );
     hacks_init();
     msync_init();
