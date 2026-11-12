@@ -70,6 +70,7 @@ static struct list device_list = LIST_INIT(device_list);
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f = NULL
 MAKE_FUNCPTR(SDL_GetError);
 MAKE_FUNCPTR(SDL_Init);
+MAKE_FUNCPTR(SDL_SetHint);
 MAKE_FUNCPTR(SDL_JoystickClose);
 MAKE_FUNCPTR(SDL_JoystickEventState);
 MAKE_FUNCPTR(SDL_JoystickGetGUID);
@@ -115,7 +116,6 @@ MAKE_FUNCPTR(SDL_GameControllerAddMapping);
 MAKE_FUNCPTR(SDL_RegisterEvents);
 MAKE_FUNCPTR(SDL_PushEvent);
 MAKE_FUNCPTR(SDL_GetTicks);
-MAKE_FUNCPTR(SDL_SetHint);
 static int (*pSDL_JoystickRumble)(SDL_Joystick *joystick, Uint16 low_frequency_rumble, Uint16 high_frequency_rumble, Uint32 duration_ms);
 static int (*pSDL_JoystickRumbleTriggers)(SDL_Joystick *joystick, Uint16 left_rumble, Uint16 right_rumble, Uint32 duration_ms);
 static Uint16 (*pSDL_JoystickGetProduct)(SDL_Joystick * joystick);
@@ -933,6 +933,7 @@ static void sdl_add_device(unsigned int index)
         .interface = -1,
         .bus_id = -1,
         .manufacturer = {'S','D','L',0},
+        .parent = { '/','b','u','s','/','s','d','l',0 },
     };
     struct sdl_device *impl;
 
@@ -1094,6 +1095,7 @@ NTSTATUS sdl_bus_init(void *args)
     }
     LOAD_FUNCPTR(SDL_GetError);
     LOAD_FUNCPTR(SDL_Init);
+    LOAD_FUNCPTR(SDL_SetHint);
     LOAD_FUNCPTR(SDL_JoystickClose);
     LOAD_FUNCPTR(SDL_JoystickEventState);
     LOAD_FUNCPTR(SDL_JoystickGetGUID);
@@ -1139,7 +1141,6 @@ NTSTATUS sdl_bus_init(void *args)
     LOAD_FUNCPTR(SDL_RegisterEvents);
     LOAD_FUNCPTR(SDL_PushEvent);
     LOAD_FUNCPTR(SDL_GetTicks);
-    LOAD_FUNCPTR(SDL_SetHint);
 #undef LOAD_FUNCPTR
     pSDL_JoystickRumble = dlsym(sdl_handle, "SDL_JoystickRumble");
     pSDL_JoystickRumbleTriggers = dlsym(sdl_handle, "SDL_JoystickRumbleTriggers");
@@ -1155,6 +1156,8 @@ NTSTATUS sdl_bus_init(void *args)
     pSDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
 #endif
 
+    /* SDL_QUIT does not stop winedevice; keep the existing signal handlers. */
+    pSDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (pSDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) < 0)
     {
         ERR("could not init SDL: %s\n", pSDL_GetError());

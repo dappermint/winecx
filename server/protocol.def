@@ -991,6 +991,7 @@ enum d3dkmt_type
     D3DKMT_SYNC         = 5,
     D3DKMT_RESOURCE     = 6,
     D3DKMT_ALLOCATION   = 7,
+    D3DKMT_SWAPCHAIN    = 8,
 };
 
 /****************************************************************/
@@ -1227,6 +1228,7 @@ typedef volatile struct
     int          exit_code;    /* process exit code */
 @REPLY
     int          self;         /* suicide? */
+    int          exit_code;    /* process exit code */
 @END
 
 
@@ -1351,20 +1353,22 @@ typedef volatile struct
     int          priority;     /* current thread priority */
     int          base_priority;/* base priority level (relative to process base priority class) */
     affinity_t   affinity;     /* affinity mask */
+    affinity_t   system_affinity; /* process system affinity mask */
     client_ptr_t entry_point;  /* thread entry point */
     obj_handle_t token;        /* impersonation token */
     int          disable_boost;/* disable thread priority boost */
     unsigned int mask;         /* setting mask (see below) */
     VARARG(desc,unicode_str);  /* description string */
 @END
-#define SET_THREAD_INFO_PRIORITY        0x01
-#define SET_THREAD_INFO_BASE_PRIORITY   0x02
-#define SET_THREAD_INFO_AFFINITY        0x04
-#define SET_THREAD_INFO_TOKEN           0x08
-#define SET_THREAD_INFO_ENTRYPOINT      0x10
-#define SET_THREAD_INFO_DESCRIPTION     0x20
-#define SET_THREAD_INFO_DBG_HIDDEN      0x40
-#define SET_THREAD_INFO_DISABLE_BOOST   0x80
+#define SET_THREAD_INFO_PRIORITY        0x001
+#define SET_THREAD_INFO_BASE_PRIORITY   0x002
+#define SET_THREAD_INFO_AFFINITY        0x004
+#define SET_THREAD_INFO_GROUP_AFFINITY  0x008
+#define SET_THREAD_INFO_TOKEN           0x010
+#define SET_THREAD_INFO_ENTRYPOINT      0x020
+#define SET_THREAD_INFO_DESCRIPTION     0x040
+#define SET_THREAD_INFO_DBG_HIDDEN      0x080
+#define SET_THREAD_INFO_DISABLE_BOOST   0x100
 
 
 /* Suspend a thread */
@@ -1833,6 +1837,12 @@ enum server_fd_type
     obj_handle_t handle;
 @REPLY
     VARARG(events,filesystem_event);  /* collected filesystem events */
+@END
+
+
+/* close all files on a device to allow unmounting it */
+@REQ(unmount_device)
+    int          dev;           /* device number from fstat */
 @END
 
 
@@ -3470,16 +3480,17 @@ enum caret_state
 
 /* Create a security token */
 @REQ(create_token)
-    struct luid    token_id;
+    struct luid    auth_id;        /* authentication id */
     unsigned int   access;         /* access rights to the new token */
     int            primary;        /* is the new token to be a primary one? */
     int            impersonation_level; /* impersonation level of the new token */
     abstime_t      expire;         /* expiration time */
     int            group_count;
-    int            primary_group;
     int            priv_count;
     /* VARARG(objattr,object_attributes);  */
     /* VARARG(user,sid); */
+    /* VARARG(owner,sid); */
+    /* VARARG(primary_group,sid); */
     /* VARARG(groups,sid); */
     /* VARARG(privs,luid_attr); */
     /* VARARG(dacl,acl); */
@@ -4245,7 +4256,7 @@ enum inproc_sync_type
 @REQ(d3dkmt_object_create)
     unsigned int        type;           /* d3dkmt object type */
     int                 fd;             /* host specific fd */
-    unsigned int        value;          /* initial value for keyed mutex */
+    unsigned __int64    value;          /* initial value for keyed mutex */
     VARARG(runtime,bytes);              /* client runtime data */
 @REPLY
     d3dkmt_handle_t     global;         /* global d3dkmt handle */
@@ -4330,6 +4341,24 @@ enum inproc_sync_type
     unsigned __int64    fence_value;    /* semaphore fence value */
     data_size_t         runtime_size;   /* size of client runtime data */
     VARARG(runtime,bytes);              /* client runtime data */
+@END
+
+
+/* Wait on a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_wait)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned int        fence_value;    /* fence value to wait for */
+    obj_handle_t        wait_handle;    /* previously returned wait handle */
+    unsigned int        wait_status;    /* status returned from previous wait */
+@REPLY
+    obj_handle_t        wait_handle;    /* wait handle for pending acquire */
+@END
+
+
+/* Signal a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_signal)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned __int64    fence_value;    /* signaled fence value */
 @END
 
 

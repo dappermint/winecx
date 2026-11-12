@@ -374,6 +374,7 @@ void *opengl_drawable_create( const struct opengl_drawable_funcs *funcs, int for
     if (!(drawable->client = client)) drawable->virtual_size = drawable->monitor_size = *size;
     else
     {
+        drawable->hwnd = get_client_surface_window( client );
         client_surface_get_size( client, &drawable->virtual_size, &drawable->monitor_size );
         client_surface_add_ref( client );
     }
@@ -430,7 +431,7 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
 {
     if (!drawable->funcs->flush) return;
 
-    if (is_client_surface_window( drawable->client, 0 ))
+    if (get_client_surface_window( drawable->client ) != NULL)
     {
         if (client_surface_get_size( drawable->client, &drawable->virtual_size, &drawable->monitor_size ))
             flags |= GL_FLUSH_UPDATED;
@@ -447,7 +448,7 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
 
 static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
 {
-    if (!is_client_surface_window( drawable->client, 0 )) return FALSE;
+    if (get_client_surface_window( drawable->client ) == NULL) return FALSE;
     client_surface_update( drawable->client );
     return drawable->funcs->swap( drawable );
 }
@@ -515,79 +516,106 @@ static BOOL make_thread_context_current( struct opengl_context *root, struct ope
     return make_internal_context_current( get_thread_context( root ? root->attrs : core_attrs ), drawable );
 }
 
-static pthread_mutex_t gamma_lock = PTHREAD_MUTEX_INITIALIZER;
-static GLuint framebuffer_program, gamma_ramp;
-static GLsync gamma_sync;
-static LONG gamma_serial;
-
-static const char *framebuffer_vertex_shader =
-"#version 330\n"
-"\n"
-"const vec4 pos[4] = vec4[4](\n"
-"    vec4(-1.0, -1.0, 0.0, 1.0),\n"
-"    vec4(-1.0, 1.0, 0.0, 1.0),\n"
-"    vec4(1.0, -1.0, 0.0, 1.0),\n"
-"    vec4(1.0, 1.0, 0.0, 1.0)\n"
-");\n"
-"const vec2 tex[4] = vec2[4](\n"
-"    vec2(0.0, 0.0),\n"
-"    vec2(0.0, 1.0),\n"
-"    vec2(1.0, 0.0),\n"
-"    vec2(1.0, 1.0)\n"
-");\n"
-"out vec2 uv;\n"
-"\n"
-"void main(void)\n"
-"{\n"
-"    gl_Position = pos[gl_VertexID];\n"
-"    uv = tex[gl_VertexID];\n"
-"}\n"
-;
-
-static const char *framebuffer_fragment_shader =
-"#version 330\n"
-"\n"
-"uniform sampler2D tex;\n"
-"layout (std140) uniform ramp {\n"
-"    vec3 values[256];\n"
-"};\n"
-"in vec2 uv;\n"
-"layout(location = 0) out vec4 color;\n"
-"\n"
-"vec3 color_from_index(vec3 index)\n"
-"{\n"
-"    ivec3 i = ivec3(index);\n"
-"    return vec3(values[i.r].r, values[i.g].g, values[i.b].b);\n"
-"}\n"
-"\n"
-"void main(void)\n"
-"{\n"
-"    vec3 sample = texture(tex, uv).xyz * 255.0;\n"
-"    vec3 prev = floor(sample);\n"
-"    vec3 next = ceil(sample);\n"
-"    color.xyz = mix(color_from_index(prev), color_from_index(next), sample - prev);\n"
-"    color.a = 1.0;\n"
-"}\n"
-;
+struct vertex
+{
+    struct { float x; float y; } pos;
+    struct { float x; float y; } tex;
+};
 
 #define GAMMA_RAMP_SIZE 256
 
-static void init_framebuffer_program(void)
+static GLuint framebuffer_program_create( BOOL compat, LONG *gamma_serial )
 {
-    GLuint vs = 0, fs = 0, program = 0, ramp_index, tex;
+    static const char *vertex_shader_compat =
+        "#version 120\n"
+        "\n"
+        "attribute vec2 pos;\n"
+        "attribute vec2 tex;\n"
+        "varying vec2 uv;\n"
+        "\n"
+        "void main(void)\n"
+        "{\n"
+        "    gl_Position.xy = pos;\n"
+        "    gl_Position.zw = vec2(0, 1);\n"
+        "    uv = tex;\n"
+        "}\n"
+        "";
+    static const char *vertex_shader =
+        "#version 330\n"
+        "\n"
+        "in vec2 pos;\n"
+        "in vec2 tex;\n"
+        "out vec2 uv;\n"
+        "\n"
+        "void main(void)\n"
+        "{\n"
+        "    gl_Position.xy = pos;\n"
+        "    gl_Position.zw = vec2(0, 1);\n"
+        "    uv = tex;\n"
+        "}\n"
+        "";
+    static const char *fragment_shader_compat =
+        "#version 120\n"
+        "\n"
+        "uniform sampler2D color;\n"
+        "uniform vec4 ramp[256];\n"
+        "\n"
+        "varying vec2 uv;\n"
+        "\n"
+        "vec3 color_from_index(vec3 index)\n"
+        "{\n"
+        "    ivec3 i = ivec3(index);\n"
+        "    return vec3(ramp[i.r].r, ramp[i.g].g, ramp[i.b].b);\n"
+        "}\n"
+        "\n"
+        "void main(void)\n"
+        "{\n"
+        "    vec3 sample = texture2D(color, uv).rgb * 255.0;\n"
+        "    vec3 prev = floor(sample);\n"
+        "    vec3 next = ceil(sample);\n"
+        "    gl_FragColor.rgb = mix(color_from_index(prev), color_from_index(next), sample - prev);\n"
+        "    gl_FragColor.a = 1.0;\n"
+        "}\n"
+        "";
+    static const char *fragment_shader =
+        "#version 330\n"
+        "\n"
+        "uniform sampler2D color;\n"
+        "uniform vec4 ramp[256];\n"
+        "\n"
+        "in vec2 uv;\n"
+        "layout(location = 0) out vec4 frag;\n"
+        "\n"
+        "vec3 color_from_index(vec3 index)\n"
+        "{\n"
+        "    ivec3 i = ivec3(index);\n"
+        "    return vec3(ramp[i.r].r, ramp[i.g].g, ramp[i.b].b);\n"
+        "}\n"
+        "\n"
+        "void main(void)\n"
+        "{\n"
+        "    vec3 sample = texture(color, uv).xyz * 255.0;\n"
+        "    vec3 prev = floor(sample);\n"
+        "    vec3 next = ceil(sample);\n"
+        "    frag.xyz = mix(color_from_index(prev), color_from_index(next), sample - prev);\n"
+        "    frag.a = 1.0;\n"
+        "}\n"
+        "";
+
     const struct opengl_funcs *funcs = &display_funcs;
     float ramp_data[GAMMA_RAMP_SIZE * 4];
+    GLuint vs = 0, fs = 0, program = 0;
     char error[512];
     GLint success;
 
     if (!(vs = funcs->p_glCreateShader( GL_VERTEX_SHADER ))) goto failed;
-    funcs->p_glShaderSource( vs, 1, &framebuffer_vertex_shader, NULL );
+    funcs->p_glShaderSource( vs, 1, compat ? &vertex_shader_compat : &vertex_shader, NULL );
     funcs->p_glCompileShader( vs );
     funcs->p_glGetShaderiv( vs, GL_COMPILE_STATUS, &success );
     if (!success) goto failed;
 
     if (!(fs = funcs->p_glCreateShader( GL_FRAGMENT_SHADER ))) goto failed;
-    funcs->p_glShaderSource( fs, 1, &framebuffer_fragment_shader, NULL );
+    funcs->p_glShaderSource( fs, 1, compat ? &fragment_shader_compat : &fragment_shader, NULL );
     funcs->p_glCompileShader( fs );
     funcs->p_glGetShaderiv( fs, GL_COMPILE_STATUS, &success );
     if (!success) goto failed;
@@ -595,6 +623,10 @@ static void init_framebuffer_program(void)
     if (!(program = funcs->p_glCreateProgram())) goto failed;
     funcs->p_glAttachShader( program, vs );
     funcs->p_glAttachShader( program, fs );
+
+    funcs->p_glBindAttribLocation( program, 0, "pos" );
+    funcs->p_glBindAttribLocation( program, 1, "tex" );
+
     funcs->p_glLinkProgram( program );
     funcs->p_glGetProgramiv( program, GL_LINK_STATUS, &success );
     if (!success) goto failed;
@@ -602,23 +634,14 @@ static void init_framebuffer_program(void)
     funcs->p_glDeleteShader( fs );
     funcs->p_glDeleteShader( vs );
 
-    get_float_gamma_ramp( ramp_data, &gamma_serial );
-    funcs->p_glGenBuffers( 1, &gamma_ramp );
-    funcs->p_glBindBuffer( GL_UNIFORM_BUFFER, gamma_ramp );
-    funcs->p_glBufferData( GL_UNIFORM_BUFFER, sizeof(float) * 4 * GAMMA_RAMP_SIZE, ramp_data, GL_DYNAMIC_DRAW );
-    gamma_sync = funcs->p_glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
-
-    ramp_index = funcs->p_glGetUniformBlockIndex( program, "ramp" );
-    funcs->p_glUniformBlockBinding( program, ramp_index, 0 );
-
     funcs->p_glUseProgram( program );
-    funcs->p_glBindBufferBase( GL_UNIFORM_BUFFER, 0, gamma_ramp );
 
-    tex = funcs->p_glGetUniformLocation( program, "tex" );
-    funcs->p_glUniform1i( tex, 0 );
+    funcs->p_glUniform1i( funcs->p_glGetUniformLocation( program, "color" ), 0 );
 
-    framebuffer_program = program;
-    return;
+    get_float_gamma_ramp( ramp_data, gamma_serial );
+    funcs->p_glUniform4fv( funcs->p_glGetUniformLocation( program, "ramp" ), GAMMA_RAMP_SIZE, ramp_data );
+
+    return program;
 
 failed:
     if (vs)
@@ -639,7 +662,7 @@ failed:
         ERR( "Program info log: %s\n", error );
         funcs->p_glDeleteProgram( program );
     }
-    return;
+    return 0;
 }
 
 struct framebuffer_surface
@@ -647,6 +670,9 @@ struct framebuffer_surface
     struct opengl_drawable  base;
     struct opengl_context  *root_context;
     struct opengl_drawable *target;         /* driver drawable to present to */
+    LONG                    gamma_serial;   /* serial of the last gamma ramp update */
+    GLuint                  program;        /* shader program for gamma or multisampled blits */
+    D3DKMT_HANDLE           swapchain;      /* target swapchain for cross-process rendering */
 };
 
 static const struct opengl_drawable_funcs framebuffer_surface_funcs;
@@ -761,9 +787,9 @@ static GLenum depth_format_from_pfd( const struct wgl_pixel_format *desc )
     return 0;
 }
 
-static void init_framebuffer_attachment( struct opengl_drawable *drawable, GLenum fbo, GLenum attachment, GLenum type,
-                                         GLuint name, const struct wgl_pixel_format *desc, SIZE size )
+static void init_framebuffer_attachment( struct opengl_drawable *drawable, GLenum fbo, GLenum attachment, GLenum type, GLuint name, SIZE size )
 {
+    const struct wgl_pixel_format *desc = pixel_formats + drawable->format - 1;
     GLenum internal_format = attachment == GL_DEPTH_ATTACHMENT ? depth_format_from_pfd( desc ) : color_format_from_pfd( desc, drawable->srgb );
     const char *kind = attachment == GL_DEPTH_ATTACHMENT ? "depth" : "color";
     const struct opengl_funcs *funcs = &display_funcs;
@@ -771,12 +797,12 @@ static void init_framebuffer_attachment( struct opengl_drawable *drawable, GLenu
     switch (type)
     {
     case GL_RENDERBUFFER:
-        if (attachment != GL_DEPTH_ATTACHMENT && !desc->samples) ERR( "Unexpected samples %u\n", desc->samples );
+        if (attachment != GL_DEPTH_ATTACHMENT && fbo == drawable->read_fbo) ERR( "Unexpected GL_RENDERBUFFER for read FBO\n" );
         funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, name );
         funcs->p_glRenderbufferStorageMultisample( GL_RENDERBUFFER, desc->samples, internal_format, size.cx, size.cy );
         break;
     case GL_TEXTURE:
-        if (desc->samples) ERR( "Unexpected samples %u\n", desc->samples );
+        if (fbo == drawable->draw_fbo) ERR( "Unexpected GL_TEXTURE for draw FBO\n" );
         funcs->p_glBindTexture( GL_TEXTURE_2D, name );
         funcs->p_glTexImage2D( GL_TEXTURE_2D, 0, internal_format, size.cx, size.cy, 0, format_from_pfd( desc ), GL_BYTE, NULL );
         funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0 );
@@ -786,11 +812,10 @@ static void init_framebuffer_attachment( struct opengl_drawable *drawable, GLenu
         return;
     }
 
-    TRACE( "drawable %p/%u resized %s buffer %#x/%u to %s\n", drawable, fbo, kind, attachment, name, wine_dbgstr_point( (POINT *)&size ) );
+    TRACE( "drawable %p/%u resized %s buffer %#x/%u to %s\n", drawable, fbo, kind, attachment, name, debugstr_size( &size ) );
 }
 
-static void resize_framebuffer_attachment( struct opengl_drawable *drawable, GLenum fbo, GLenum attachment,
-                                           const struct wgl_pixel_format *desc, SIZE size )
+static void resize_framebuffer_attachment( struct opengl_drawable *drawable, GLenum fbo, GLenum attachment, SIZE size )
 {
     const struct opengl_funcs *funcs = &display_funcs;
     GLenum type;
@@ -799,7 +824,7 @@ static void resize_framebuffer_attachment( struct opengl_drawable *drawable, GLe
     funcs->p_glGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, attachment, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
     funcs->p_glGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, attachment, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, (GLint *)&type );
 
-    init_framebuffer_attachment( drawable, fbo, attachment, type, name, desc, size );
+    init_framebuffer_attachment( drawable, fbo, attachment, type, name, size );
 }
 
 static void destroy_framebuffer_attachment( struct opengl_drawable *drawable, GLenum fbo, GLenum attachment )
@@ -822,77 +847,78 @@ static void destroy_framebuffer_attachment( struct opengl_drawable *drawable, GL
     TRACE( "drawable %p/%u destroyed %s buffer %#x/%u\n", drawable, fbo, kind, attachment, name );
 }
 
-static GLuint create_framebuffer( struct opengl_drawable *drawable, const struct wgl_pixel_format *desc, SIZE size )
+static UINT framebuffer_image_count( struct opengl_drawable *drawable )
 {
-    const struct opengl_funcs *funcs = &display_funcs;
-    GLuint count = 1, fbo, name;
-    GLenum ret;
-
+    GLuint count = 1;
     if (drawable->doublebuffer) count *= 2;
     if (drawable->stereo) count *= 2;
+    return count;
+}
 
-    funcs->p_glGenFramebuffers( 1, &fbo );
-    funcs->p_glBindFramebuffer( GL_FRAMEBUFFER, fbo );
+static void create_framebuffer( struct opengl_drawable *drawable, GLuint *fbo, SIZE size )
+{
+    const struct wgl_pixel_format *desc = pixel_formats + drawable->format - 1;
+    GLuint count = framebuffer_image_count( drawable ), name;
+    const struct opengl_funcs *funcs = &display_funcs;
+    GLenum ret;
+
+    funcs->p_glGenFramebuffers( 1, fbo );
+    funcs->p_glBindFramebuffer( GL_FRAMEBUFFER, *fbo );
 
     for (GLuint i = 0; i < count; i++)
     {
-        if (desc->samples)
+        if (fbo == &drawable->draw_fbo)
         {
             funcs->p_glGenRenderbuffers( 1, &name );
-            init_framebuffer_attachment( drawable, fbo, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, name, desc, size );
+            init_framebuffer_attachment( drawable, *fbo, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, name, size );
             funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, name );
         }
         else
         {
             funcs->p_glGenTextures( 1, &name );
-            init_framebuffer_attachment( drawable, fbo, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE, name, desc, size );
+            init_framebuffer_attachment( drawable, *fbo, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE, name, size );
             funcs->p_glFramebufferTexture( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, name, 0 );
         }
-        TRACE( "drawable %p/%u created color buffer %#x/%u, %s\n", drawable, fbo, GL_COLOR_ATTACHMENT0 + i, name, wine_dbgstr_point( (POINT *)&size ) );
+        TRACE( "drawable %p/%u created color buffer %#x/%u, %s\n", drawable, *fbo, GL_COLOR_ATTACHMENT0 + i, name, debugstr_size( &size ) );
     }
 
     if (desc->pfd.cDepthBits)
     {
         funcs->p_glGenRenderbuffers( 1, &name );
-        init_framebuffer_attachment( drawable, fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, name, desc, size );
+        init_framebuffer_attachment( drawable, *fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, name, size );
         funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, name );
         if (desc->pfd.cStencilBits) funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, name );
-        TRACE( "drawable %p/%u created depth buffer %u, %s\n", drawable, fbo, name, wine_dbgstr_point( (POINT *)&size ) );
+        TRACE( "drawable %p/%u created depth buffer %u, %s\n", drawable, *fbo, name, debugstr_size( &size ) );
     }
 
-    TRACE( "drawable %p created framebuffer %u\n", drawable, fbo );
+    TRACE( "drawable %p created framebuffer %u\n", drawable, *fbo );
 
     ret = funcs->p_glCheckFramebufferStatus( GL_FRAMEBUFFER );
-    if (ret != GL_FRAMEBUFFER_COMPLETE) WARN( "glCheckFramebufferStatus returned %#x\n", ret );
-    return fbo;
+    if (ret != GL_FRAMEBUFFER_COMPLETE) ERR( "glCheckFramebufferStatus returned %#x\n", ret );
 }
 
-static void resize_framebuffer( struct opengl_drawable *drawable, const struct wgl_pixel_format *desc, GLuint fbo, SIZE size )
+static void resize_framebuffer( struct opengl_drawable *drawable, GLuint fbo, BOOL read, SIZE size )
 {
+    const struct wgl_pixel_format *desc = pixel_formats + drawable->format - 1;
     const struct opengl_funcs *funcs = &display_funcs;
-    GLuint count = 1;
+    GLuint count = framebuffer_image_count( drawable );
     GLenum ret;
-
-    if (drawable->doublebuffer) count *= 2;
-    if (drawable->stereo) count *= 2;
 
     funcs->p_glBindFramebuffer( GL_FRAMEBUFFER, fbo );
 
-    for (GLuint i = 0; i < count; i++) resize_framebuffer_attachment( drawable, fbo, GL_COLOR_ATTACHMENT0 + i, desc, size );
-    if (desc->pfd.cDepthBits) resize_framebuffer_attachment( drawable, fbo, GL_DEPTH_ATTACHMENT, desc, size );
+    for (GLuint i = 0; i < count; i++) resize_framebuffer_attachment( drawable, fbo, GL_COLOR_ATTACHMENT0 + i, size );
+    if (desc->pfd.cDepthBits) resize_framebuffer_attachment( drawable, fbo, GL_DEPTH_ATTACHMENT, size );
 
     ret = funcs->p_glCheckFramebufferStatus( GL_FRAMEBUFFER );
-    if (ret != GL_FRAMEBUFFER_COMPLETE) WARN( "glCheckFramebufferStatus returned %#x\n", ret );
-    TRACE( "drawable %p/%u resized buffers to %s\n", drawable, fbo, wine_dbgstr_point( (POINT *)&size ) );
+    if (ret != GL_FRAMEBUFFER_COMPLETE) ERR( "glCheckFramebufferStatus returned %#x\n", ret );
+    TRACE( "drawable %p/%u resized buffers to %s\n", drawable, fbo, debugstr_size( &size ) );
 }
 
-static void destroy_framebuffer( struct opengl_drawable *drawable, const struct wgl_pixel_format *desc, GLuint fbo )
+static void destroy_framebuffer( struct opengl_drawable *drawable, GLuint fbo )
 {
+    const struct wgl_pixel_format *desc = pixel_formats + drawable->format - 1;
     const struct opengl_funcs *funcs = &display_funcs;
-    GLuint count = 1;
-
-    if (drawable->doublebuffer) count *= 2;
-    if (drawable->stereo) count *= 2;
+    GLuint count = framebuffer_image_count( drawable );
 
     funcs->p_glBindFramebuffer( GL_FRAMEBUFFER, fbo );
 
@@ -905,16 +931,23 @@ static void destroy_framebuffer( struct opengl_drawable *drawable, const struct 
 
 static void framebuffer_surface_reset( struct opengl_drawable *drawable )
 {
-    struct wgl_pixel_format draw_desc = pixel_formats[drawable->format - 1], read_desc = draw_desc;
-
-    read_desc.samples = read_desc.sample_buffers = 0;
+    struct framebuffer_surface *surface = framebuffer_from_opengl_drawable( drawable );
 
     TRACE( "%s\n", debugstr_opengl_drawable( drawable ) );
 
     if (drawable->draw_fbo != drawable->read_fbo)
-        destroy_framebuffer( drawable, &draw_desc, drawable->draw_fbo );
-    destroy_framebuffer( drawable, &read_desc, drawable->read_fbo );
+        destroy_framebuffer( drawable, drawable->draw_fbo );
+    destroy_framebuffer( drawable, drawable->read_fbo );
     drawable->draw_fbo = drawable->read_fbo = 0;
+
+    if (surface->program)
+    {
+        const struct opengl_funcs *funcs = &display_funcs;
+
+        surface->gamma_serial = 0;
+        funcs->p_glDeleteProgram( surface->program );
+        surface->program = 0;
+    }
 }
 
 static void framebuffer_surface_destroy( struct opengl_drawable *drawable )
@@ -928,19 +961,65 @@ static void framebuffer_surface_destroy( struct opengl_drawable *drawable )
         make_thread_context_current( surface->root_context, NULL );
         framebuffer_surface_reset( drawable );
     }
+    if (surface->swapchain) d3dkmt_swapchain_destroy_remote( surface->swapchain );
     if (surface->target) opengl_drawable_release( surface->target );
+}
+
+static NTSTATUS framebuffer_swapchain_acquire_image( struct opengl_drawable *drawable, UINT *index )
+{
+    struct framebuffer_surface *surface = framebuffer_from_opengl_drawable( drawable );
+    NTSTATUS status;
+    SIZE size;
+
+    if (!drawable->hwnd) return STATUS_NOT_IMPLEMENTED;
+
+    for (;;)
+    {
+        if (surface->swapchain)
+        {
+            if (!(status = d3dkmt_swapchain_acquire_image( surface->swapchain, index ))) return status;
+            d3dkmt_swapchain_destroy_remote( surface->swapchain );
+            surface->swapchain = 0;
+            if (status != STATUS_GRAPHICS_ALLOCATION_CONTENT_LOST) return status;
+        }
+
+        if ((status = d3dkmt_swapchain_create_remote( drawable->hwnd, &size, &surface->swapchain ))) return status;
+        if (memcmp( &size, &drawable->virtual_size, sizeof(size) ))
+        {
+            drawable->virtual_size = drawable->monitor_size = size;
+            opengl_drawable_flush( drawable, drawable->interval, GL_FLUSH_UPDATED );
+        }
+    }
+}
+
+static NTSTATUS framebuffer_swapchain_queue_present( struct opengl_drawable *drawable, UINT index )
+{
+    struct framebuffer_surface *surface = framebuffer_from_opengl_drawable( drawable );
+    struct client_surface *client;
+
+    if (!(client = drawable->client)) return STATUS_NOT_IMPLEMENTED;
+    if (!surface->swapchain) return STATUS_NOT_IMPLEMENTED;
+
+    return d3dkmt_swapchain_queue_present( surface->swapchain, index );
 }
 
 static void blit_framebuffer_surface( struct opengl_drawable *drawable )
 {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-
     const struct opengl_funcs *funcs = &display_funcs;
+    struct framebuffer_surface *surface = framebuffer_from_opengl_drawable( drawable );
     SIZE src = drawable->virtual_size, dst = drawable->monitor_size;
+    BOOL compat = surface->root_context == root_compat;
     float ramp_data[GAMMA_RAMP_SIZE * 4];
+    NTSTATUS status;
+    UINT index = -1;
 
-    TRACE( "%s src %s dst %s fbo %u\n", debugstr_opengl_drawable( drawable ), wine_dbgstr_point( (POINT *)&src ),
-           wine_dbgstr_point( (POINT *)&dst ), drawable->read_fbo );
+    TRACE( "%s src %s dst %s fbo %u\n", debugstr_opengl_drawable( drawable ), debugstr_size( &src ), debugstr_size( &dst ), drawable->read_fbo );
+
+    if ((status = framebuffer_swapchain_acquire_image( drawable, &index )))
+    {
+        WARN( "Failed to acquire swapchain image, status %#x\n", status );
+        index = -1;
+    }
 
     funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, drawable->read_fbo );
     funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, 0 );
@@ -952,38 +1031,53 @@ static void blit_framebuffer_surface( struct opengl_drawable *drawable )
         funcs->p_glReadBuffer( GL_COLOR_ATTACHMENT0 );
         funcs->p_glBlitFramebuffer( 0, 0, src.cx, src.cy, 0, 0, dst.cx, dst.cy, GL_COLOR_BUFFER_BIT, GL_LINEAR );
     }
-    else
+    else if (surface->program || (surface->program = framebuffer_program_create( compat, &surface->gamma_serial )))
     {
+        struct vertex vertex[] =
+        {
+            {{-1, -1}, {0, 0}},
+            {{+1, -1}, {1, 0}},
+            {{-1, +1}, {0, 1}},
+            {{+1, +1}, {1, 1}},
+        };
+        GLuint vao, vbo;
         GLint front;
-        GLuint vao;
 
-        pthread_once( &once, init_framebuffer_program );
-        funcs->p_glUseProgram( framebuffer_program );
+        funcs->p_glUseProgram( surface->program );
 
         funcs->p_glActiveTexture( GL_TEXTURE0 );
         funcs->p_glGetFramebufferAttachmentParameteriv( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &front );
         funcs->p_glBindTexture( GL_TEXTURE_2D, front );
 
-        pthread_mutex_lock( &gamma_lock );
-        if (get_float_gamma_ramp( ramp_data, &gamma_serial ))
-        {
-            funcs->p_glDeleteSync( gamma_sync );
-            funcs->p_glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof(float) * 4 * GAMMA_RAMP_SIZE, ramp_data );
-            gamma_sync = funcs->p_glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
-        }
-        funcs->p_glWaitSync( gamma_sync, 0, GL_TIMEOUT_IGNORED );
-        pthread_mutex_unlock( &gamma_lock );
+        if (get_float_gamma_ramp( ramp_data, &surface->gamma_serial ))
+            funcs->p_glUniform4fv( funcs->p_glGetUniformLocation( surface->program, "ramp" ), GAMMA_RAMP_SIZE, ramp_data );
 
         funcs->p_glViewport( 0, 0, dst.cx, dst.cy );
 
-        /* macOS OpenGL requires a VAO for glDrawArrays */
+        funcs->p_glGenBuffers( 1, &vbo );
+        funcs->p_glBindBuffer( GL_ARRAY_BUFFER, vbo );
+        funcs->p_glBufferData( GL_ARRAY_BUFFER, sizeof(vertex), vertex, GL_STATIC_DRAW );
+
         funcs->p_glGenVertexArrays( 1, &vao );
         funcs->p_glBindVertexArray( vao );
+        funcs->p_glVertexAttribPointer( 0, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), (void *)offsetof(struct vertex, pos) );
+        funcs->p_glEnableVertexAttribArray( 0 );
+        funcs->p_glVertexAttribPointer( 1, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), (void *)offsetof(struct vertex, tex) );
+        funcs->p_glEnableVertexAttribArray( 1 );
+
         funcs->p_glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
+
         funcs->p_glDeleteVertexArrays( 1, &vao );
+        funcs->p_glDeleteBuffers( 1, &vbo );
     }
 
     if (drawable->srgb) funcs->p_glDisable( GL_FRAMEBUFFER_SRGB );
+
+    if (index != -1)
+    {
+        status = framebuffer_swapchain_queue_present( drawable, index );
+        if (status) WARN( "Failed to present swapchain image, status %#x\n", status );
+    }
 }
 
 static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT flags )
@@ -996,9 +1090,7 @@ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT fl
     /* check for root context changes when we need to re-create the FBO, also used for initialization */
     if (flags & GL_FLUSH_ACTIVATE && surface->root_context != context->root_context)
     {
-        struct wgl_pixel_format draw_desc = pixel_formats[drawable->format - 1], read_desc = draw_desc;
-
-        read_desc.samples = read_desc.sample_buffers = 0;
+        const struct wgl_pixel_format *desc = pixel_formats + drawable->format - 1;
 
         /* destroy the FBO with the previous root context if we have any */
         if (surface->root_context)
@@ -1012,12 +1104,11 @@ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT fl
         surface->root_context = context->root_context;
         make_thread_context_current( surface->root_context, NULL );
 
-        read_desc.samples = read_desc.sample_buffers = 0;
-        surface->base.read_fbo = create_framebuffer( &surface->base, &read_desc, surface->base.virtual_size );
+        create_framebuffer( &surface->base, &surface->base.read_fbo, surface->base.virtual_size );
         if (!surface->base.read_fbo) ERR( "Failed to create read framebuffer object\n" );
 
-        if (!draw_desc.sample_buffers) surface->base.draw_fbo = surface->base.read_fbo;
-        else surface->base.draw_fbo = create_framebuffer( &surface->base, &draw_desc, surface->base.virtual_size );
+        if (!desc->sample_buffers) surface->base.draw_fbo = surface->base.read_fbo;
+        else create_framebuffer( &surface->base, &surface->base.draw_fbo, surface->base.virtual_size );
         if (!surface->base.draw_fbo) ERR( "Failed to create draw framebuffer object\n" );
 
         TRACE( "Initialized framebuffer %p with root context %p attrs %s\n", debugstr_opengl_drawable( drawable ),
@@ -1025,20 +1116,17 @@ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT fl
     }
     else if (flags & GL_FLUSH_UPDATED)
     {
-        struct wgl_pixel_format draw_desc = pixel_formats[drawable->format - 1], read_desc = draw_desc;
         SIZE size = drawable->virtual_size;
-
-        read_desc.samples = read_desc.sample_buffers = 0;
 
         make_thread_context_current( surface->root_context, NULL );
 
-        TRACE( "Resizing drawable %p/%u to %s\n", drawable, drawable->read_fbo, wine_dbgstr_point( (POINT *)&size ) );
-        resize_framebuffer( drawable, &read_desc, drawable->read_fbo, size );
+        TRACE( "Resizing drawable %p/%u to %s\n", drawable, drawable->read_fbo, debugstr_size( &size ) );
+        resize_framebuffer( drawable, drawable->read_fbo, TRUE, size );
 
         if (drawable->draw_fbo != drawable->read_fbo)
         {
-            TRACE( "Resizing drawable %p/%u to %s\n", drawable, drawable->draw_fbo, wine_dbgstr_point( (POINT *)&size ) );
-            resize_framebuffer( drawable, &draw_desc, drawable->draw_fbo, size );
+            TRACE( "Resizing drawable %p/%u to %s\n", drawable, drawable->draw_fbo, debugstr_size( &size ) );
+            resize_framebuffer( drawable, drawable->draw_fbo, FALSE, size );
         }
     }
 
@@ -1401,7 +1489,7 @@ static BOOL egldrv_pbuffer_create( HDC hdc, int format, SIZE size, BOOL largest,
     EGLSurface pbuffer;
 
     TRACE( "hdc %p, format %d, size %s, largest %u, texture_format %#x, texture_target %#x, max_level %#x, drawable %p\n",
-           hdc, format, wine_dbgstr_point((POINT *)&size), largest, texture_format, texture_target, max_level, drawable );
+           hdc, format, debugstr_size( &size ), largest, texture_format, texture_target, max_level, drawable );
 
     *attrib++ = EGL_WIDTH;
     *attrib++ = size.cx;
@@ -1571,12 +1659,13 @@ static const struct opengl_driver_funcs egldrv_funcs =
     .p_context_activate = egldrv_context_activate,
 };
 
-static void dump_extensions( BOOLEAN extensions[GL_EXTENSION_COUNT] )
-{
 #define USE_GL_EXT(x) [x] = #x,
-    static const char *names[] = { ALL_EGL_EXTS ALL_GL_EXTS ALL_WGL_EXTS };
+static const char *extension_names[] = { ALL_EGL_EXTS ALL_GL_EXTS ALL_WGL_EXTS };
 #undef USE_GL_EXT
-    for (UINT i = 0; i < GL_EXTENSION_COUNT; i++) if (extensions[i]) TRACE( "- %s\n", names[i] );
+
+static void dump_extensions( const BOOLEAN extensions[GL_EXTENSION_COUNT] )
+{
+    for (UINT i = 0; i < GL_EXTENSION_COUNT; i++) if (extensions[i]) TRACE( "- %s\n", extension_names[i] );
 }
 
 static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
@@ -1707,16 +1796,31 @@ static void init_egl_devices( struct opengl_funcs *funcs )
     for (int i = 0; i < count; i++)
     {
         BOOLEAN extensions[GL_EXTENSION_COUNT] = {0};
-
-        if (devices[i] == display_egl.device) continue;
+        EGLAttrib device_type = EGL_DEVICE_TYPE_OTHER_EXT;
 
         if (!(str = funcs->p_eglQueryDeviceStringEXT( devices[i], EGL_EXTENSIONS ))) continue;
         parse_extensions( str, extensions, TRUE );
         TRACE( "EGL device %#x extensions:\n", i );
         dump_extensions( extensions );
 
-        /* Assume that all devices without EGL_MESA_device_software are accelerated. */
-        if (extensions[EGL_MESA_device_software]) continue;
+        if (extensions[EGL_EXT_device_type])
+            funcs->p_eglQueryDeviceAttribEXT( devices[i], EGL_DEVICE_TYPE_EXT, &device_type );
+
+        if (devices[i] == display_egl.device)
+        {
+            display_egl.device_type = device_type;
+
+            TRACE( "EGL display device extensions:\n" );
+            for (UINT i = 0; i < GL_EXTENSION_COUNT; i++)
+            {
+                if (display_egl.extensions[i] || !extensions[i]) continue;
+                TRACE( "- %s\n", extension_names[i] );
+                display_egl.extensions[i] = TRUE;
+            }
+            continue;
+        }
+
+        if (device_type == EGL_DEVICE_TYPE_CPU_EXT || extensions[EGL_MESA_device_software]) continue;
 
         if (!(egl = calloc( 1, sizeof(*egl) ))) break;
 
@@ -1724,6 +1828,7 @@ static void init_egl_devices( struct opengl_funcs *funcs )
         egl->type = EGL_PLATFORM_DEVICE_EXT;
         egl->native_display = devices[i];
         egl->device = devices[i];
+        egl->device_type = device_type;
         egl->index = list_count( &devices_egl );
         memcpy( egl->extensions, extensions, sizeof(extensions) );
 
@@ -1799,8 +1904,9 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
 
     TRACE( "Initializing device %u (%p)\n", egl->index, egl->device);
 
-    /* Assume that all devices without EGL_MESA_device_software are accelerated. */
-    egl->accelerated = !egl->extensions[EGL_MESA_device_software];
+    egl->accelerated = (egl->device_type != EGL_DEVICE_TYPE_CPU_EXT) && !egl->extensions[EGL_MESA_device_software];
+
+    TRACE( "  - device_type: %#x\n", egl->device_type );
     TRACE( "  - accelerated: %u\n", egl->accelerated );
 
     /* EGL does not provide a convenient way to get device / vendor ID, so we have to do it
@@ -1886,7 +1992,8 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
             memcpy( egl->version, values, sizeof(egl->version) );
         TRACE( "  - version: %u.%u.%u\n", egl->version[0], egl->version[1], egl->version[2] );
 
-        parse_extensions( (const char *)funcs->p_glGetString( GL_EXTENSIONS ), extensions, TRUE );
+        parse_current_extensions( (context == core_context ? egl->core_version : egl->compat_version) / 10, extensions );
+
         if (extensions[GL_NVX_gpu_memory_info])
         {
             funcs->p_glGetIntegerv( GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, values );
@@ -2029,7 +2136,7 @@ static int win32u_wglGetPixelFormat( HDC hdc )
     int format;
     HWND hwnd;
 
-    if ((hwnd = NtUserWindowFromDC( hdc )))
+    if ((hwnd = NtUserWindowFromDC( hdc )) && is_current_process_window( hwnd ))
         format = get_window_pixel_format( hwnd );
     else if ((format = get_dc_pixel_format( hdc )) < 0)
     {
@@ -2052,7 +2159,7 @@ void set_window_opengl_drawable( HWND hwnd, struct opengl_drawable *new_drawable
     struct opengl_drawable *old_drawable = NULL;
     WND *win;
 
-    if ((win = get_win_ptr( hwnd )) && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
+    if (hwnd && (win = get_win_ptr( hwnd )) && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
     {
         struct opengl_drawable **ptr = current ? &win->current_drawable : &win->unused_drawable;
         old_drawable = *ptr;
@@ -2078,7 +2185,7 @@ static struct opengl_drawable *get_window_current_drawable( HWND hwnd )
     return drawable;
 }
 
-static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format )
+static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format, BOOL raw )
 {
     struct opengl_drawable *drawable = NULL;
     WND *win;
@@ -2105,13 +2212,13 @@ static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format
     {
         struct client_surface *client;
 
-        if (!(client = get_unused_client_surface( hwnd, format, emulate_modeset )))
+        if (!(client = get_unused_client_surface( hwnd, format, raw || emulate_modeset )))
             WARN( "Failed to create a surface for window %p, format %d\n", hwnd, format );
         else
         {
             if (!(driver_funcs->p_surface_create( client, format, &drawable )))
                 WARN( "Failed to create a drawable for window %p, format %d\n", hwnd, format );
-            else if (emulate_modeset && drawable->funcs != &framebuffer_surface_funcs)
+            else if (!raw && emulate_modeset && drawable->funcs != &framebuffer_surface_funcs)
             {
                 struct opengl_drawable *framebuffer = framebuffer_surface_create( format, client, NULL, drawable );
                 opengl_drawable_release( drawable );
@@ -2401,7 +2508,7 @@ static BOOL win32u_wglSetPixelFormat( HDC hdc, int new_format, const PIXELFORMAT
     funcs->p_get_pixel_formats( NULL, 0, &total, &onscreen );
     if (new_format <= 0 || new_format > total) return FALSE;
 
-    if ((hwnd = NtUserWindowFromDC( hdc )))
+    if ((hwnd = NtUserWindowFromDC( hdc )) && is_current_process_window( hwnd ))
     {
         struct opengl_drawable *drawable;
         int old_format;
@@ -2416,7 +2523,7 @@ static BOOL win32u_wglSetPixelFormat( HDC hdc, int new_format, const PIXELFORMAT
 
         if ((old_format = get_window_pixel_format( hwnd ))) return old_format == new_format;
 
-        if (!(drawable = get_window_unused_drawable( hwnd, new_format ))) return FALSE;
+        if (!(drawable = get_window_unused_drawable( hwnd, new_format, FALSE ))) return FALSE;
         set_window_opengl_drawable( hwnd, drawable, TRUE );
         set_window_opengl_drawable( hwnd, drawable, FALSE );
         opengl_drawable_release( drawable );
@@ -2461,7 +2568,7 @@ static BOOL win32u_wglSetPixelFormatWINE( HDC hdc, int format )
     HWND hwnd;
 
     if (!(hwnd = NtUserWindowFromDC( hdc )) || !is_cache_dc( hdc )) return FALSE;
-    if (format && get_window_pixel_format( hwnd ) == format) return TRUE;
+    if (format && is_current_process_window( hwnd ) && get_window_pixel_format( hwnd ) == format) return TRUE;
 
     TRACE( "%p/%p format %d\n", hdc, hwnd, format );
 
@@ -2478,7 +2585,7 @@ static BOOL win32u_wglSetPixelFormatWINE( HDC hdc, int format )
         opengl_drawable_release( drawable );
         drawable = NULL;
     }
-    if (format && (drawable || (drawable = get_window_unused_drawable( hwnd, format ))))
+    if (format && (drawable || (drawable = get_window_unused_drawable( hwnd, format, FALSE ))))
     {
         set_window_opengl_drawable( hwnd, drawable, TRUE );
         set_dc_opengl_drawable( hdc, drawable );
@@ -2514,11 +2621,11 @@ static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct
 
     /* return the memory DCs drawables directly */
     if (hdc && !(hwnd = NtUserWindowFromDC( hdc ))) return get_dc_opengl_drawable( hdc );
-    if (!hdc && drawable && drawable->client) hwnd = drawable->client->hwnd;
+    if (!hdc && drawable) hwnd = drawable->hwnd;
     if (!hwnd) return NULL;
 
     /* if the drawable we were using is for the same window, keep using it */
-    if (drawable && is_client_surface_window( drawable->client, hwnd ))
+    if (drawable && get_client_surface_window( drawable->client ) == hwnd)
     {
         opengl_drawable_add_ref( drawable );
         return drawable;
@@ -2529,14 +2636,13 @@ static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct
     if (hdc && (drawable = get_dc_opengl_drawable( hdc ))) return drawable;
 
     /* get an updated drawable with the desired format */
-    return get_window_unused_drawable( hwnd, format );
+    return get_window_unused_drawable( hwnd, format, FALSE );
 }
 
 static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc, HDC read_hdc )
 {
     struct opengl_drawable *new_draw, *new_read, *old_draw = NULL, *old_read = NULL;
     struct opengl_context *previous = NtCurrentTeb()->glReserved2;
-    struct client_surface *client;
     BOOL ret;
 
     if (!(new_draw = get_updated_drawable( draw_hdc, context->attrs.format, context->draw ))) return FALSE;
@@ -2562,10 +2668,10 @@ static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc
         context_exchange_drawables( context, &new_draw, &new_read );
         get_opengl_thread_data()->client_current = TRUE;
 
-        if (old_draw && old_draw != context->draw && old_draw != context->read && old_draw->client)
-            set_window_opengl_drawable( old_draw->client->hwnd, old_draw, FALSE );
-        if (old_read && old_read != context->draw && old_read != context->read && old_read->client)
-            set_window_opengl_drawable( old_read->client->hwnd, old_read, FALSE );
+        if (old_draw && old_draw != context->draw && old_draw != context->read)
+            set_window_opengl_drawable( old_draw->hwnd, old_draw, FALSE );
+        if (old_read && old_read != context->draw && old_read != context->read)
+            set_window_opengl_drawable( old_read->hwnd, old_read, FALSE );
 
         opengl_drawable_flush( context->read, context->read->interval, GL_FLUSH_ACTIVATE );
         opengl_drawable_flush( context->draw, context->draw->interval, GL_FLUSH_ACTIVATE );
@@ -2582,11 +2688,9 @@ static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc
 done:
     if (new_draw) opengl_drawable_release( new_draw );
     if (new_read) opengl_drawable_release( new_read );
-    if (ret && (client = context->draw->client))
-    {
-        /* update the current window drawable to the last used draw surface */
-        set_window_opengl_drawable( client->hwnd, context->draw, TRUE );
-    }
+
+    /* update the current window drawable to the last used draw surface */
+    if (ret) set_window_opengl_drawable( context->draw->hwnd, context->draw, TRUE );
     return ret;
 }
 
@@ -2606,9 +2710,9 @@ static BOOL win32u_make_current( HDC draw_hdc, HDC read_hdc, struct opengl_conte
         NtCurrentTeb()->glContext = NULL;
 
         context_exchange_drawables( context, &draw, &read );
-        if (draw->client) set_window_opengl_drawable( draw->client->hwnd, draw, FALSE );
+        set_window_opengl_drawable( draw->hwnd, draw, FALSE );
         opengl_drawable_release( draw );
-        if (read->client) set_window_opengl_drawable( read->client->hwnd, read, FALSE );
+        set_window_opengl_drawable( read->hwnd, read, FALSE );
         opengl_drawable_release( read );
 
         return TRUE;
@@ -2645,7 +2749,7 @@ static BOOL win32u_pbuffer_create( HDC hdc, int format, SIZE size, const int *at
     struct pbuffer *pbuffer;
     UINT total, onscreen;
 
-    TRACE( "(%p, %d, %s, %p)\n", hdc, format, wine_dbgstr_point((POINT *)&size), attribs );
+    TRACE( "(%p, %d, %s, %p)\n", hdc, format, debugstr_size( &size ), attribs );
 
     funcs->p_get_pixel_formats( NULL, 0, &total, &onscreen );
     if (format <= 0 || format > total)
@@ -2938,7 +3042,7 @@ static int get_window_swap_interval( HWND hwnd )
     int interval;
     WND *win;
 
-    if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return 0;
+    if (!hwnd || !(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return 0;
     interval = win->swap_interval;
     release_win_ptr( win );
 
@@ -2994,7 +3098,7 @@ static struct opengl_context *win32u_context_create( HDC hdc, struct opengl_cont
         attrs.flags &= WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
     }
 
-    if ((attrs.major >= 0 && attrs.major < 3) || (attrs.major == 3 && attrs.minor == 0 && !attrs.flags))
+    if ((attrs.major >= 0 && attrs.major < 3) || (attrs.major == 3 && attrs.minor <= 1 && !attrs.flags))
     {
         WARN( "Ignoring legacy OpenGL version %d.%d\n", attrs.major, attrs.minor == -1 ? 0 : attrs.minor );
         attrs.profile = WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
@@ -3051,10 +3155,10 @@ static BOOL win32u_context_flush( struct opengl_context *context, void (*flush)(
     int interval;
 
     if (!draw->client) return flush_memory_pbuffer( flush );
-    interval = get_window_swap_interval( draw->client->hwnd );
+    interval = get_window_swap_interval( draw->hwnd );
     if (flags & GL_FLUSH_FORCE_SWAP) interval = 0;
 
-    TRACE( "context %p, hwnd %p, interval %d, flush %p, flags %#x\n", context, draw->client->hwnd, interval, flush, flags );
+    TRACE( "context %p, hwnd %p, interval %d, flush %p, flags %#x\n", context, draw->hwnd, interval, flush, flags );
 
     context_sync_drawables( context, 0, 0 );
     if (!(draw = context->draw)) return FALSE; /* should never happen */
@@ -3190,7 +3294,7 @@ static BOOL query_renderer_integer( struct egl_platform *egl, GLenum attribute, 
     case WGL_RENDERER_ACCELERATED_WINE: *value = egl->accelerated; return TRUE;
     case WGL_RENDERER_DEVICE_ID_WINE: *value = egl->device_id; return TRUE;
     case WGL_RENDERER_VENDOR_ID_WINE: *value = egl->vendor_id; return TRUE;
-    case WGL_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_WINE: *value = 0; return TRUE;
+    case WGL_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_WINE: *value = (egl->device_type == EGL_DEVICE_TYPE_INTEGRATED_GPU_EXT); return TRUE;
     case WGL_RENDERER_VERSION_WINE: memcpy( value, egl->version, sizeof(egl->version) ); return TRUE;
     case WGL_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_WINE:
         value[0] = egl->compat_version / 10;
@@ -3563,9 +3667,9 @@ void cleanup_opengl_thread(void)
         struct opengl_drawable *draw = NULL, *read = NULL;
 
         context_exchange_drawables( context, &draw, &read );
-        if (draw->client) set_window_opengl_drawable( draw->client->hwnd, draw, FALSE );
+        set_window_opengl_drawable( draw->hwnd, draw, FALSE );
         opengl_drawable_release( draw );
-        if (read->client) set_window_opengl_drawable( read->client->hwnd, read, FALSE );
+        set_window_opengl_drawable( read->hwnd, read, FALSE );
         opengl_drawable_release( read );
     }
 
@@ -3575,4 +3679,115 @@ void cleanup_opengl_thread(void)
     if (data->noerror_context) win32u_context_destroy( data->noerror_context );
     if (data->null_surface) opengl_drawable_release( data->null_surface );
     free( data );
+}
+
+struct opengl_swapchain
+{
+    struct list entry;
+    struct opengl_drawable *drawable;
+    D3DKMT_HANDLE global;
+    D3DKMT_HANDLE local;
+};
+
+static struct opengl_swapchain *get_opengl_swapchain( HWND toplevel, D3DKMT_HANDLE global, BOOL remove )
+{
+    struct opengl_swapchain *swapchain;
+    WND *win;
+
+    if (!(win = get_win_ptr( toplevel )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return NULL;
+    LIST_FOR_EACH_ENTRY( swapchain, &win->opengl_swapchains, struct opengl_swapchain, entry )
+        if (swapchain->global == global) break;
+    if (&swapchain->entry == &win->opengl_swapchains) swapchain = NULL;
+    else if (remove) list_remove( &swapchain->entry );
+    release_win_ptr( win );
+
+    return swapchain;
+}
+
+static void free_opengl_swapchain( struct opengl_swapchain *swapchain )
+{
+    TRACE( "swapchain %p/%#x local %#x\n", swapchain, swapchain->global, swapchain->local );
+
+    if (swapchain->local) d3dkmt_swapchain_destroy( swapchain->local );
+    if (swapchain->drawable) opengl_drawable_release( swapchain->drawable );
+    free( swapchain );
+}
+
+D3DKMT_HANDLE create_opengl_swapchain( HWND toplevel, HWND hwnd )
+{
+    struct opengl_swapchain *swapchain;
+    D3DKMT_HANDLE resources[3], global;
+    const struct opengl_funcs *funcs;
+    int format;
+    SIZE size;
+    WND *win;
+
+    TRACE( "toplevel %p hwnd %p\n", toplevel, hwnd );
+
+    if (!(funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION ))) return 0;
+
+    for (format = 1; format <= formats_count; format++)
+    {
+        struct wgl_pixel_format *desc = pixel_formats + format - 1;
+        if (!(desc->pfd.dwFlags & PFD_SUPPORT_OPENGL)) continue;
+        if (desc->pfd.iPixelType != PFD_TYPE_RGBA) continue;
+        if (desc->pfd.cColorBits == 24) break;
+    }
+
+    if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return 0;
+    if (!(swapchain->drawable = get_window_unused_drawable( hwnd, format, TRUE ))) goto failed;
+    size = swapchain->drawable->virtual_size;
+
+    for (UINT i = 0; i < ARRAY_SIZE(resources); i++)
+    {
+        resources[i] = d3dkmt_create_resource( -1, &global );
+        if (!resources[i]) goto failed;
+    }
+
+    if (d3dkmt_swapchain_create( toplevel, hwnd, size, resources, &swapchain->local, &swapchain->global )) goto failed;
+
+    if (!(win = get_win_ptr( toplevel )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) goto failed;
+    list_add_tail( &win->opengl_swapchains, &swapchain->entry );
+    release_win_ptr( win );
+
+    TRACE( "Created external swapchain %p/%#x\n", swapchain, swapchain->global );
+    return swapchain->global;
+
+failed:
+    WARN( "Failed to create external swapchain\n" );
+    free_opengl_swapchain( swapchain );
+    return 0;
+}
+
+BOOL destroy_opengl_swapchain( HWND toplevel, D3DKMT_HANDLE global )
+{
+    struct opengl_swapchain *swapchain;
+
+    TRACE( "toplevel %p global %#x\n", toplevel, global );
+
+    if (!(swapchain = get_opengl_swapchain( toplevel, global, TRUE ))) return FALSE;
+    free_opengl_swapchain( swapchain );
+    return TRUE;
+}
+
+BOOL present_opengl_swapchain( HWND toplevel, D3DKMT_HANDLE global, UINT index )
+{
+    struct opengl_swapchain *swapchain;
+
+    TRACE( "toplevel %p global %#x index %#x\n", toplevel, global, index );
+
+    if (!(swapchain = get_opengl_swapchain( toplevel, global, FALSE ))) return FALSE;
+    return TRUE;
+}
+
+void free_opengl_swapchains( struct list *swapchains )
+{
+    struct list *ptr;
+
+    while ((ptr = list_head( swapchains )))
+    {
+        struct opengl_swapchain *swapchain = LIST_ENTRY( ptr, struct opengl_swapchain, entry );
+        list_remove( &swapchain->entry );
+        free_opengl_swapchain( swapchain );
+    }
 }

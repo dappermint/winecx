@@ -1131,19 +1131,7 @@ static BOOL init_gl_info(void)
 
 static BOOL macdrv_surface_create(struct client_surface *client, int format, struct opengl_drawable **drawable)
 {
-    struct macdrv_win_data *data;
-    HWND hwnd = client->hwnd;
-
     TRACE("client %s, format %d, drawable %p\n", debugstr_client_surface(client), format, drawable);
-
-    if (!(data = get_win_data(hwnd)))
-    {
-        FIXME("DC for window %p of other process: not implemented\n", hwnd);
-        return FALSE;
-    }
-    data->pixel_format = format;
-    release_win_data(data);
-
     return !!(*drawable = opengl_drawable_create(&macdrv_surface_funcs, format, client, NULL));
 }
 
@@ -2249,6 +2237,7 @@ static BOOL macdrv_describe_pixel_format(int format, struct wgl_pixel_format *de
     if (pf->double_buffer)  descr->pfd.dwFlags |= PFD_DOUBLEBUFFER;
     if (pf->stereo)         descr->pfd.dwFlags |= PFD_STEREO;
     if (pf->backing_store)  descr->pfd.dwFlags |= PFD_SWAP_COPY;
+    if (!pf->double_buffer) descr->pfd.dwFlags |= PFD_SUPPORT_GDI;
 
     descr->pfd.iPixelType   = PFD_TYPE_RGBA;
 

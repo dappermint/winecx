@@ -219,6 +219,7 @@ struct egl_platform
     /* filled by win32u after init_egl_platform */
     unsigned int         index;
     EGLDeviceEXT         device;
+    UINT                 device_type;
     EGLDisplay           display;
     UINT                 config_count;
     EGLConfig           *configs;
@@ -263,6 +264,7 @@ struct opengl_drawable
     LONG                                ref;            /* reference count */
     struct list                         entry;          /* entry in cleanup lists */
     struct client_surface              *client;         /* underlying client surface */
+    HWND                                hwnd;           /* target window for this drawable, if any */
     HDC                                 owner_hdc;      /* HDC owning the drawable, if any (for pbuffer / D3D swapchains) */
     int                                 format;         /* pixel format of the drawable */
     int                                 interval;       /* last set surface swap interval */

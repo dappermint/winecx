@@ -2403,7 +2403,7 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
  *
  * Build the module data for the initially-loaded ntdll.
  */
-static void build_ntdll_module(void)
+static void *build_ntdll_module(void)
 {
     UNICODE_STRING nt_name = RTL_CONSTANT_STRING( L"\\??\\C:\\windows\\system32\\ntdll.dll" );
     MEMORY_BASIC_INFORMATION meminfo;
@@ -2417,8 +2417,8 @@ static void build_ntdll_module(void)
     assert( wm );
     wm->ldr.Flags &= ~LDR_DONT_RESOLVE_REFS;
     node_ntdll = wm->ldr.DdagNode;
-    if (TRACE_ON(relay)) RELAY_SetupDLL( module );
     TRACE_(loaddll)( "Loaded %s at %p: builtin\n", debugstr_w(wm->ldr.FullDllName.Buffer), module);
+    return module;
 }
 
 
@@ -2496,7 +2496,7 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     if (NtReadFile( file, 0, NULL, NULL, &io, &mz, sizeof(mz), &offset, NULL )) return 0;
     if (io.Information != sizeof(mz)) return 0;
     if (mz.e_magic != IMAGE_DOS_SIGNATURE) return 0;
-    offset.QuadPart = mz.e_lfanew;
+    offset.QuadPart = (ULONG)mz.e_lfanew;
     if (NtReadFile( file, 0, NULL, NULL, &io, &nt, sizeof(nt), &offset, NULL )) return 0;
     if (io.Information != sizeof(nt)) return 0;
     if (nt.nt32.Signature != IMAGE_NT_SIGNATURE) return 0;
@@ -4819,7 +4819,7 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
         ret = NULL;
         if (dos->e_magic == IMAGE_DOS_SIGNATURE)
         {
-            ret = (IMAGE_NT_HEADERS *)((char *)dos + dos->e_lfanew);
+            ret = (IMAGE_NT_HEADERS *)((char *)dos + (ULONG)dos->e_lfanew);
             if (ret->Signature != IMAGE_NT_SIGNATURE) ret = NULL;
         }
     }
@@ -4979,13 +4979,14 @@ static void init_wow64( CONTEXT *context )
 {
     if (!imports_fixup_done)
     {
-        HMODULE wow64;
+        HMODULE wow64, ntdll_module;
         WINE_MODREF *wm;
         NTSTATUS status;
         static const WCHAR wow64_path[] = L"C:\\windows\\system32\\wow64.dll";
 
         build_wow64_main_module();
-        build_ntdll_module();
+        ntdll_module = build_ntdll_module();
+        if (TRACE_ON(relay)) RELAY_SetupDLL( ntdll_module );
 
         /* CW HACK 20810: In Wow64/32-bit-bottle mode, load by name rather than full path */
         if (wow64_using_32bit_prefix)
@@ -5128,6 +5129,7 @@ void loader_init( CONTEXT *context, void **entry )
         ANSI_STRING ctrl_routine = RTL_CONSTANT_STRING( "CtrlRoutine" );
         WINE_MODREF *kernel32;
         PEB *peb = NtCurrentTeb()->Peb;
+        void *ntdll_module;
         unsigned int i;
         WCHAR env_str[16];
         ULONG heap_flags = HEAP_GROWABLE;
@@ -5172,11 +5174,12 @@ void loader_init( CONTEXT *context, void **entry )
         if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
 
         wm = build_main_module();
-        build_ntdll_module();
+        ntdll_module = build_ntdll_module();
 #ifdef __arm64ec__
         load_arm64ec_module();
         update_load_config( wm->ldr.DllBase );
 #endif
+        if (TRACE_ON(relay)) RELAY_SetupDLL( ntdll_module );
 
         if ((status = load_dll( NULL, L"kernel32.dll", 0, &kernel32, FALSE )) != STATUS_SUCCESS)
         {

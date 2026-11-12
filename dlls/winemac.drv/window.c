@@ -1820,7 +1820,7 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
     /* CW HACK 16933: No Cocoa window decorations for the Quicken main window. */
     if (is_main_quicken_window(hwnd)) return FALSE;
 
-    *style_mask = ex_style = 0;
+    *style_mask = *ex_style_mask = 0;
     if (wf.title_bar)
     {
         *style_mask |= WS_CAPTION;

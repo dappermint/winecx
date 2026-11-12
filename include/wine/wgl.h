@@ -117,7 +117,7 @@ typedef unsigned __int64 EGLuint64NV;
 typedef unsigned __int64 EGLuint64KHR;
 typedef __int64 EGLnsecsANDROID;
 typedef int EGLNativeFileDescriptorKHR;
-typedef ssize_t EGLsizeiANDROID;
+typedef SSIZE_T EGLsizeiANDROID;
 typedef void (*EGLSetBlobFuncANDROID) (const void *key, EGLsizeiANDROID keySize, const void *value, EGLsizeiANDROID valueSize);
 typedef EGLsizeiANDROID (*EGLGetBlobFuncANDROID) (const void *key, EGLsizeiANDROID keySize, void *value, EGLsizeiANDROID valueSize);
 struct EGLClientPixmapHI {
@@ -272,6 +272,11 @@ typedef unsigned int GLhandleARB;
 #define EGL_DEPTH_SIZE                                                             0x3025
 #define EGL_DEQUEUE_READY_TIME_ANDROID                                             0x343B
 #define EGL_DEVICE_EXT                                                             0x322C
+#define EGL_DEVICE_TYPE_CPU_EXT                                                    0x3594
+#define EGL_DEVICE_TYPE_DISCRETE_GPU_EXT                                           0x3593
+#define EGL_DEVICE_TYPE_EXT                                                        0x3590
+#define EGL_DEVICE_TYPE_INTEGRATED_GPU_EXT                                         0x3592
+#define EGL_DEVICE_TYPE_OTHER_EXT                                                  0x3591
 #define EGL_DEVICE_UUID_EXT                                                        0x335C
 #define EGL_DISCARD_SAMPLES_ARM                                                    0x3286
 #define EGL_DISPLAY_PRESENT_TIME_ANDROID                                           0x343A
@@ -1022,6 +1027,7 @@ typedef unsigned int GLhandleARB;
 #define GL_BUFFER_ACCESS_FLAGS                                                     0x911F
 #define GL_BUFFER_ACCESS_OES                                                       0x88BB
 #define GL_BUFFER_BINDING                                                          0x9302
+#define GL_BUFFER_CLIENT_POINTER_SIZE_MESA                                         0x9790
 #define GL_BUFFER_DATA_SIZE                                                        0x9303
 #define GL_BUFFER_FLUSHING_UNMAP_APPLE                                             0x8A13
 #define GL_BUFFER_GPU_ADDRESS_NV                                                   0x8F1D
@@ -1090,6 +1096,16 @@ typedef unsigned int GLhandleARB;
 #define GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT                                        0x00004000
 #define GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT_EXT                                    0x00004000
 #define GL_CLIENT_PIXEL_STORE_BIT                                                  0x00000001
+#define GL_CLIENT_POINTER_DYNAMIC_COPY_MESA                                        0x9799
+#define GL_CLIENT_POINTER_DYNAMIC_DRAW_MESA                                        0x9797
+#define GL_CLIENT_POINTER_DYNAMIC_READ_MESA                                        0x9798
+#define GL_CLIENT_POINTER_RELEASE_ALL_MESA                                         0x00000001
+#define GL_CLIENT_POINTER_STATIC_COPY_MESA                                         0x9796
+#define GL_CLIENT_POINTER_STATIC_DRAW_MESA                                         0x9794
+#define GL_CLIENT_POINTER_STATIC_READ_MESA                                         0x9795
+#define GL_CLIENT_POINTER_STREAM_COPY_MESA                                         0x9793
+#define GL_CLIENT_POINTER_STREAM_DRAW_MESA                                         0x9791
+#define GL_CLIENT_POINTER_STREAM_READ_MESA                                         0x9792
 #define GL_CLIENT_STORAGE_BIT                                                      0x0200
 #define GL_CLIENT_STORAGE_BIT_EXT                                                  0x0200
 #define GL_CLIENT_VERTEX_ARRAY_BIT                                                 0x00000002
@@ -3170,6 +3186,7 @@ typedef unsigned int GLhandleARB;
 #define GL_MAP2_VERTEX_ATTRIB9_4_NV                                                0x8679
 #define GL_MAP_ATTRIB_U_ORDER_NV                                                   0x86C3
 #define GL_MAP_ATTRIB_V_ORDER_NV                                                   0x86C4
+#define GL_MAP_CLIENT_POINTER_BIT_MESA                                             0x4000
 #define GL_MAP_COHERENT_BIT                                                        0x0080
 #define GL_MAP_COHERENT_BIT_EXT                                                    0x0080
 #define GL_MAP_COLOR                                                               0x0D10
@@ -7727,6 +7744,7 @@ typedef void       (GLAPIENTRY *PFN_glActiveStencilFaceEXT)( GLenum face );
 typedef void       (GLAPIENTRY *PFN_glActiveTexture)( GLenum texture );
 typedef void       (GLAPIENTRY *PFN_glActiveTextureARB)( GLenum texture );
 typedef void       (GLAPIENTRY *PFN_glActiveVaryingNV)( GLuint program, const GLchar *name );
+typedef void       (GLAPIENTRY *PFN_glAddClientPointerRangeMESA)( void *addr, GLsizeiptr size );
 typedef void       (GLAPIENTRY *PFN_glAlphaFragmentOp1ATI)( GLenum op, GLuint dst, GLuint dstMod, GLuint arg1, GLuint arg1Rep, GLuint arg1Mod );
 typedef void       (GLAPIENTRY *PFN_glAlphaFragmentOp2ATI)( GLenum op, GLuint dst, GLuint dstMod, GLuint arg1, GLuint arg1Rep, GLuint arg1Mod, GLuint arg2, GLuint arg2Rep, GLuint arg2Mod );
 typedef void       (GLAPIENTRY *PFN_glAlphaFragmentOp3ATI)( GLenum op, GLuint dst, GLuint dstMod, GLuint arg1, GLuint arg1Rep, GLuint arg1Mod, GLuint arg2, GLuint arg2Rep, GLuint arg2Mod, GLuint arg3, GLuint arg3Rep, GLuint arg3Mod );
@@ -8540,7 +8558,7 @@ typedef void       (GLAPIENTRY *PFN_glGetFenceivNV)( GLuint fence, GLenum pname,
 typedef void       (GLAPIENTRY *PFN_glGetFinalCombinerInputParameterfvNV)( GLenum variable, GLenum pname, GLfloat *params );
 typedef void       (GLAPIENTRY *PFN_glGetFinalCombinerInputParameterivNV)( GLenum variable, GLenum pname, GLint *params );
 typedef void       (GLAPIENTRY *PFN_glGetFirstPerfQueryIdINTEL)( GLuint *queryId );
-typedef void       (GLAPIENTRY *PFN_glGetFixedv)( GLenum pname, GLfixed *params );
+typedef void       (GLAPIENTRY *PFN_glGetFixedv)( GLenum pname, GLfixed *data );
 typedef void       (GLAPIENTRY *PFN_glGetFixedvOES)( GLenum pname, GLfixed *params );
 typedef void       (GLAPIENTRY *PFN_glGetFloatIndexedvEXT)( GLenum target, GLuint index, GLfloat *data );
 typedef void       (GLAPIENTRY *PFN_glGetFloati_v)( GLenum target, GLuint index, GLfloat *data );
@@ -9724,6 +9742,7 @@ typedef void       (GLAPIENTRY *PFN_glReadnPixelsEXT)( GLint x, GLint y, GLsizei
 typedef void       (GLAPIENTRY *PFN_glRectxOES)( GLfixed x1, GLfixed y1, GLfixed x2, GLfixed y2 );
 typedef void       (GLAPIENTRY *PFN_glRectxvOES)( const GLfixed *v1, const GLfixed *v2 );
 typedef void       (GLAPIENTRY *PFN_glReferencePlaneSGIX)( const GLdouble *equation );
+typedef void*      (GLAPIENTRY *PFN_glReleaseClientPointerRangeMESA)( GLbitfield flags, GLsizeiptr *size );
 typedef GLboolean  (GLAPIENTRY *PFN_glReleaseKeyedMutexWin32EXT)( GLuint memory, GLuint64 key );
 typedef void       (GLAPIENTRY *PFN_glReleaseShaderCompiler)(void);
 typedef void       (GLAPIENTRY *PFN_glRenderGpuMaskNV)( GLbitfield mask );
@@ -10850,6 +10869,7 @@ typedef BOOL       (GLAPIENTRY *PFN_wglSwapIntervalEXT)( int interval );
     USE_GL_EXT(EGL_EXT_device_persistent_id) \
     USE_GL_EXT(EGL_EXT_device_query) \
     USE_GL_EXT(EGL_EXT_device_query_name) \
+    USE_GL_EXT(EGL_EXT_device_type) \
     USE_GL_EXT(EGL_EXT_display_alloc) \
     USE_GL_EXT(EGL_EXT_explicit_device) \
     USE_GL_EXT(EGL_EXT_gl_colorspace_bt2020_hlg) \
@@ -11700,6 +11720,7 @@ typedef BOOL       (GLAPIENTRY *PFN_wglSwapIntervalEXT)( int interval );
     USE_GL_EXT(GL_MESA_framebuffer_flip_x) \
     USE_GL_EXT(GL_MESA_framebuffer_flip_y) \
     USE_GL_EXT(GL_MESA_framebuffer_swap_xy) \
+    USE_GL_EXT(GL_MESA_map_buffer_client_pointer) \
     USE_GL_EXT(GL_MESA_pack_invert) \
     USE_GL_EXT(GL_MESA_program_binary_formats) \
     USE_GL_EXT(GL_MESA_resize_buffers) \
@@ -13195,6 +13216,7 @@ typedef BOOL       (GLAPIENTRY *PFN_wglSwapIntervalEXT)( int interval );
     USE_GL_FUNC(glActiveTexture) \
     USE_GL_FUNC(glActiveTextureARB) \
     USE_GL_FUNC(glActiveVaryingNV) \
+    USE_GL_FUNC(glAddClientPointerRangeMESA) \
     USE_GL_FUNC(glAlphaFragmentOp1ATI) \
     USE_GL_FUNC(glAlphaFragmentOp2ATI) \
     USE_GL_FUNC(glAlphaFragmentOp3ATI) \
@@ -15192,6 +15214,7 @@ typedef BOOL       (GLAPIENTRY *PFN_wglSwapIntervalEXT)( int interval );
     USE_GL_FUNC(glRectxOES) \
     USE_GL_FUNC(glRectxvOES) \
     USE_GL_FUNC(glReferencePlaneSGIX) \
+    USE_GL_FUNC(glReleaseClientPointerRangeMESA) \
     USE_GL_FUNC(glReleaseKeyedMutexWin32EXT) \
     USE_GL_FUNC(glReleaseShaderCompiler) \
     USE_GL_FUNC(glRenderGpuMaskNV) \

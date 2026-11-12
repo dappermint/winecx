@@ -975,6 +975,7 @@ enum d3dkmt_type
     D3DKMT_SYNC         = 5,
     D3DKMT_RESOURCE     = 6,
     D3DKMT_ALLOCATION   = 7,
+    D3DKMT_SWAPCHAIN    = 8,
 };
 
 
@@ -1262,7 +1263,7 @@ struct terminate_process_reply
 {
     struct reply_header __header;
     int          self;
-    char __pad_12[4];
+    int          exit_code;
 };
 
 
@@ -1435,25 +1436,27 @@ struct set_thread_info_request
     int          priority;
     int          base_priority;
     affinity_t   affinity;
+    affinity_t   system_affinity;
     client_ptr_t entry_point;
     obj_handle_t token;
     int          disable_boost;
     unsigned int mask;
     /* VARARG(desc,unicode_str); */
-    char __pad_52[4];
+    char __pad_60[4];
 };
 struct set_thread_info_reply
 {
     struct reply_header __header;
 };
-#define SET_THREAD_INFO_PRIORITY        0x01
-#define SET_THREAD_INFO_BASE_PRIORITY   0x02
-#define SET_THREAD_INFO_AFFINITY        0x04
-#define SET_THREAD_INFO_TOKEN           0x08
-#define SET_THREAD_INFO_ENTRYPOINT      0x10
-#define SET_THREAD_INFO_DESCRIPTION     0x20
-#define SET_THREAD_INFO_DBG_HIDDEN      0x40
-#define SET_THREAD_INFO_DISABLE_BOOST   0x80
+#define SET_THREAD_INFO_PRIORITY        0x001
+#define SET_THREAD_INFO_BASE_PRIORITY   0x002
+#define SET_THREAD_INFO_AFFINITY        0x004
+#define SET_THREAD_INFO_GROUP_AFFINITY  0x008
+#define SET_THREAD_INFO_TOKEN           0x010
+#define SET_THREAD_INFO_ENTRYPOINT      0x020
+#define SET_THREAD_INFO_DESCRIPTION     0x040
+#define SET_THREAD_INFO_DBG_HIDDEN      0x080
+#define SET_THREAD_INFO_DISABLE_BOOST   0x100
 
 
 
@@ -2202,6 +2205,18 @@ struct read_change_reply
 {
     struct reply_header __header;
     /* VARARG(events,filesystem_event); */
+};
+
+
+
+struct unmount_device_request
+{
+    struct request_header __header;
+    int          dev;
+};
+struct unmount_device_reply
+{
+    struct reply_header __header;
 };
 
 
@@ -4811,20 +4826,20 @@ struct remove_clipboard_listener_reply
 struct create_token_request
 {
     struct request_header __header;
-    struct luid    token_id;
+    struct luid    auth_id;
     unsigned int   access;
     int            primary;
     int            impersonation_level;
     abstime_t      expire;
     int            group_count;
-    int            primary_group;
     int            priv_count;
 
 
 
 
 
-    char __pad_52[4];
+
+
 };
 struct create_token_reply
 {
@@ -6093,7 +6108,8 @@ struct d3dkmt_object_create_request
     struct request_header __header;
     unsigned int        type;
     int                 fd;
-    unsigned int        value;
+    char __pad_20[4];
+    unsigned __int64    value;
     /* VARARG(runtime,bytes); */
 };
 struct d3dkmt_object_create_reply
@@ -6231,6 +6247,37 @@ struct d3dkmt_mutex_release_reply
 
 
 
+struct d3dkmt_sync_wait_request
+{
+    struct request_header __header;
+    d3dkmt_handle_t     sync;
+    unsigned int        fence_value;
+    obj_handle_t        wait_handle;
+    unsigned int        wait_status;
+    char __pad_28[4];
+};
+struct d3dkmt_sync_wait_reply
+{
+    struct reply_header __header;
+    obj_handle_t        wait_handle;
+    char __pad_12[4];
+};
+
+
+
+struct d3dkmt_sync_signal_request
+{
+    struct request_header __header;
+    d3dkmt_handle_t     sync;
+    unsigned __int64    fence_value;
+};
+struct d3dkmt_sync_signal_reply
+{
+    struct reply_header __header;
+};
+
+
+
 struct alpc_create_port_request
 {
     struct request_header __header;
@@ -6311,6 +6358,7 @@ enum request
     REQ_get_next_console_request,
     REQ_read_directory_changes,
     REQ_read_change,
+    REQ_unmount_device,
     REQ_create_mapping,
     REQ_open_mapping,
     REQ_get_mapping_info,
@@ -6555,6 +6603,8 @@ enum request
     REQ_d3dkmt_object_open_name,
     REQ_d3dkmt_mutex_acquire,
     REQ_d3dkmt_mutex_release,
+    REQ_d3dkmt_sync_wait,
+    REQ_d3dkmt_sync_signal,
     REQ_alpc_create_port,
     REQ_NB_REQUESTS
 };
@@ -6626,6 +6676,7 @@ union generic_request
     struct get_next_console_request_request get_next_console_request_request;
     struct read_directory_changes_request read_directory_changes_request;
     struct read_change_request read_change_request;
+    struct unmount_device_request unmount_device_request;
     struct create_mapping_request create_mapping_request;
     struct open_mapping_request open_mapping_request;
     struct get_mapping_info_request get_mapping_info_request;
@@ -6870,6 +6921,8 @@ union generic_request
     struct d3dkmt_object_open_name_request d3dkmt_object_open_name_request;
     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
+    struct d3dkmt_sync_wait_request d3dkmt_sync_wait_request;
+    struct d3dkmt_sync_signal_request d3dkmt_sync_signal_request;
     struct alpc_create_port_request alpc_create_port_request;
 };
 union generic_reply
@@ -6939,6 +6992,7 @@ union generic_reply
     struct get_next_console_request_reply get_next_console_request_reply;
     struct read_directory_changes_reply read_directory_changes_reply;
     struct read_change_reply read_change_reply;
+    struct unmount_device_reply unmount_device_reply;
     struct create_mapping_reply create_mapping_reply;
     struct open_mapping_reply open_mapping_reply;
     struct get_mapping_info_reply get_mapping_info_reply;
@@ -7183,9 +7237,11 @@ union generic_reply
     struct d3dkmt_object_open_name_reply d3dkmt_object_open_name_reply;
     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+    struct d3dkmt_sync_wait_reply d3dkmt_sync_wait_reply;
+    struct d3dkmt_sync_signal_reply d3dkmt_sync_signal_reply;
     struct alpc_create_port_reply alpc_create_port_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 1814
+#define SERVER_PROTOCOL_VERSION 1815
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

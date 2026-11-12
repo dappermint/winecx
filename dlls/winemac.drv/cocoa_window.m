@@ -225,7 +225,7 @@ static inline BOOL stage_manager_enabled(void)
 @end
 
 
-@interface WineContentView : WineBaseView <NSTextInputClient, NSViewLayerContentScaleDelegate>
+@interface WineContentView : WineBaseView <NSTextInput, NSViewLayerContentScaleDelegate>
 {
     CGRect surfaceRect;
     CGImageRef colorImage;
@@ -719,7 +719,7 @@ static inline BOOL stage_manager_enabled(void)
     }
 
     /*
-     * ---------- NSTextInputClient methods ----------
+     * ---------- NSTextInput methods ----------
      */
     - (NSTextInputContext*) inputContext
     {
@@ -728,7 +728,7 @@ static inline BOOL stage_manager_enabled(void)
         return [super inputContext];
     }
 
-    - (void) insertText:(id)string replacementRange:(NSRange)replacementRange
+    - (void) insertText:(id)string
     {
         if ([string isKindOfClass:[NSAttributedString class]])
             string = [string string];
@@ -742,7 +742,7 @@ static inline BOOL stage_manager_enabled(void)
         [(WineWindow*)[self window] setCommandDone:TRUE];
     }
 
-    - (void) setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange
+    - (void) setMarkedText:(id)string selectedRange:(NSRange)selectedRange
     {
         if ([string isKindOfClass:[NSAttributedString class]])
             string = [string string];
@@ -751,12 +751,8 @@ static inline BOOL stage_manager_enabled(void)
         {
             WineWindow* window = (WineWindow*)[self window];
 
-            if (replacementRange.location == NSNotFound)
-                replacementRange = NSMakeRange(0, [markedText length]);
-
-            [markedText replaceCharactersInRange:replacementRange withString:string];
+            [markedText replaceCharactersInRange:NSMakeRange(0, [markedText length]) withString:string];
             markedTextSelection = selectedRange;
-            markedTextSelection.location += replacementRange.location;
 
             macdrv_ime_set_text(window.hwnd, (CFStringRef)[markedText string], false,
                                 markedTextSelection.location,
@@ -790,14 +786,17 @@ static inline BOOL stage_manager_enabled(void)
         return [markedText length] > 0;
     }
 
-    - (NSAttributedString*) attributedSubstringForProposedRange:(NSRange)aRange actualRange:(NSRangePointer)actualRange
+    - (NSInteger) conversationIdentifier
+    {
+        return (NSInteger)self;
+    }
+
+    - (NSAttributedString*) attributedSubstringFromRange:(NSRange)aRange
     {
         if (aRange.location >= [markedText length])
             return nil;
 
         aRange = NSIntersectionRange(aRange, NSMakeRange(0, [markedText length]));
-        if (actualRange)
-            *actualRange = aRange;
         return [markedText attributedSubstringFromRange:aRange];
     }
 
@@ -806,20 +805,15 @@ static inline BOOL stage_manager_enabled(void)
         return [NSArray array];
     }
 
-    - (NSRect) firstRectForCharacterRange:(NSRange)aRange actualRange:(NSRangePointer)actualRange
+    - (NSRect) firstRectForCharacterRange:(NSRange)aRange
     {
         NSRect ret;
-
-        aRange = NSIntersectionRange(aRange, NSMakeRange(0, [markedText length]));
 
         pthread_mutex_lock(&ime_composition_rect_mutex);
         ret = NSRectFromCGRect(cgrect_mac_from_win(ime_composition_rect));
         pthread_mutex_unlock(&ime_composition_rect_mutex);
 
         [[WineApplicationController sharedController] flipRect:&ret];
-
-        if (actualRange)
-            *actualRange = aRange;
         return ret;
     }
 
@@ -3929,25 +3923,37 @@ void macdrv_view_release_metal_view(WineMetalView *view)
 
 id<WineMetalSwapChain> macdrv_create_view_swapchain(WineContentView *view)
 {
+@autoreleasepool
+{
     return [[MetalViewSwapChain alloc] initWithView:view];
+}
 }
 
 id<WineMetalSwapChain> macdrv_create_offscreen_swapchain(void* hwnd, void* client_hwnd, CGRect container, CGRect frame)
+{
+@autoreleasepool
 {
     return [[CAContextSwapChain alloc] initWithHwnd:hwnd
                                              client:client_hwnd
                                           container:container
                                               frame:frame];
 }
+}
 
 CAMetalLayer *macdrv_swapchain_get_layer(id<WineMetalSwapChain> swapchain)
 {
+@autoreleasepool
+{
     return [swapchain layer];
+}
 }
 
 void macdrv_destroy_swapchain(id<WineMetalSwapChain> swapchain)
 {
+@autoreleasepool
+{
     [swapchain release];
+}
 }
 
 void macdrv_window_create_ca_layer_host_view(WineWindow *window, unsigned int context_id)
