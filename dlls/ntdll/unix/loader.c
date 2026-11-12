@@ -536,6 +536,31 @@ fail:
 }
 
 
+/* A host that keeps a bundle for the application names its Contents/MacOS here,
+ * so the link lands inside it and LaunchServices gives the process the bundle's
+ * identity.  Unlike the temporary directory this one outlives a loader update,
+ * so a link to another loader is replaced rather than reused.
+ */
+static char *create_host_link(const char *wineloader_path, const char *exe_name)
+{
+    const char *dir = getenv("WINE_APP_LINK_DIR");
+    struct stat loader_st, st;
+    char *linkpath;
+
+    if (!dir || dir[0] != '/' || stat(wineloader_path, &loader_st)) return NULL;
+    if (asprintf(&linkpath, "%s/%s", dir, exe_name) < 0) return NULL;
+
+    if (!stat(linkpath, &st))
+    {
+        if (st.st_dev == loader_st.st_dev && st.st_ino == loader_st.st_ino) return linkpath;
+        unlink(linkpath);
+    }
+    if (!link(wineloader_path, linkpath)) return linkpath;
+
+    free(linkpath);
+    return NULL;
+}
+
 static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
 {
     struct stat st;
@@ -619,7 +644,12 @@ static void replace_wineloader_path_with_link(char **wineloader_path, const char
     char *app_name = get_app_display_name(image_path);
     if (app_name)
     {
-        char *preloader_path = create_preloader_link(*wineloader_path, app_name);
+        const char *owner = getenv("WINE_APP_IDENTITY_EXE");
+        char *preloader_path = NULL;
+
+        if (owner && owner[0] && image_is(image_path, owner))
+            preloader_path = create_host_link(*wineloader_path, app_name);
+        if (!preloader_path) preloader_path = create_preloader_link(*wineloader_path, app_name);
         if (preloader_path)
         {
             free(*wineloader_path);
